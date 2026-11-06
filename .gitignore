@@ -7,3 +7,8 @@
 build/
 flutter_app/.flutter-plugins*
 node_modules/
+server/data/
+
+# Local Flutter SDK and editor state
+/flutter/
+.idea/

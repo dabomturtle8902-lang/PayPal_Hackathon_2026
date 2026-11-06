@@ -1,0 +1,10 @@
+{
+  "name": "splitsync-sandbox-server",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.9.0" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env index.mjs",
+    "test": "node --test test/*.test.mjs"
+  }
+}

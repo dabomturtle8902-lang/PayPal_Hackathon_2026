@@ -1,9 +1,14 @@
 # Verification
 
-- Node syntax check passed for the website script.
-- `node website/test/demo.cjs` passed: 22 rendered routes, allocation sum invariant, lamp ownership edits, participant-specific breakdowns, payment result variants, and publication state.
-- Browser walkthrough verified organizer entry, scanner demo fallback, purchase review, AI split, confirmation, requests, QR rendering, participant share and payment result.
-- Responsive visual inspection at desktop 1440×1000, portrait 390×844 and landscape 844×390. Five website screenshots are in previews/. These are browser renders, not native Flutter screenshots.
-- Flutter SDK is unavailable; native app build, dependency resolution and camera behavior have not been tested.
-- PayPal handoff and AI are simulations; no provider transaction or model integration was tested.
-- Private hosting registration succeeded but the source upload was blocked by automatic approval review. No deployment was completed.
+## PayPal Sandbox backend
+
+- Thirteen Node backend tests pass with mocked PayPal responses. Coverage includes organizer sessions, participant isolation, amount/reference checks, persisted creation request IDs across restart, create/capture retries, capture-timeout reconciliation, pending/completed webhook updates, signature verification requests, CSRF/host/traversal checks, and refreshing orders without a return URL.
+- Twenty-two static website route regression checks pass.
+- Flutter dependency resolution succeeded and `flutter analyze` reported no issues. A release Flutter web build succeeded in a temporary generated web wrapper. Native Android/iOS builds and native device camera access have not been tested.
+- Browser walkthrough verified organizer login, initial $0 paid ledger, confirmed split publication, private participant links, $70 Maya breakdown, and missing-credentials error handling. The compiled Flutter web app connected to the same backend and displayed the $0 paid / $150 remaining ledger. No real credentials were supplied or accessed.
+- No actual PayPal Sandbox order, approval, capture or delivered webhook has been tested against the provider. Complete that test locally with your Sandbox credentials and approve the payment yourself on PayPal's screen.
+- The backend uses a local JSON ledger and one process. It has not been deployed; a static Sites deployment cannot run this Node server.
+
+## Earlier visual design
+
+The original five screenshots show static website routes at desktop, portrait and landscape widths. Their payment statuses and receipt are sample data. The new backend starts with everyone Awaiting payment and relies on provider capture status. AI allocation, rent and shop remain demos.
