@@ -5,7 +5,7 @@ import {mkdtemp, rm, readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createApp} from '../app.mjs';
-import {Store, newState, normalizeState} from '../store.mjs';
+import {Store, defaultContacts, formatMoney, fxQuote, newState, normalizeState} from '../store.mjs';
 import {PayPal} from '../paypal.mjs';
 import {normalizeExtractedBill, normalizeParsedRequest} from '../nvidia.mjs';
 const organizerToken='organizer-test-key-abcdefghijklmnopqrstuvwxyz';
@@ -224,4 +224,65 @@ test('reimbursement requests stay Created when delivery fails, isolate tokens, a
 
   const v1Migrated=normalizeState({version:1,lamp:'Leah',published:true,participants:{},events:[]});
   assert.equal(v1Migrated.version,2);assert(Array.isArray(v1Migrated.contacts));assert(Array.isArray(v1Migrated.reimbursements));
+});
+
+test('international FX precision, send-intent validated reply, and idempotent demo-pay work cleanly',async()=>{
+  const contacts=defaultContacts();
+  const gbp=fxQuote(2000,'USD','GBP');
+  assert.equal(gbp.targetAmountCents,1580);
+  assert.equal(formatMoney(gbp.targetAmountCents,'GBP',true),'£15.80 GBP');
+  const jpy=fxQuote(2000,'USD','JPY');
+  assert.equal(jpy.targetAmountCents,307000);
+  assert.equal(formatMoney(jpy.targetAmountCents,'JPY',true),'¥3,070 JPY');
+
+  const sendParsed=normalizeParsedRequest({
+    intent:'send',
+    recipients:[{name:'Allen',amountCents:2000,currency:'USD',reason:'Thanks for coffee'}],
+  },contacts,null);
+  assert.equal(sendParsed.intent,'send');
+  assert.equal(sendParsed.recipients[0].targetCurrency,'GBP');
+  assert.match(sendParsed.replyText,/£15\.80 GBP/);
+  assert.match(sendParsed.replyText,/Verify the recipient and amount before you pay/);
+
+  const t=setup();
+  const tx1=await t.request('/api/organizer/demo-pay',{method:'POST',auth:true,body:{contactId:'allen',sourceAmountCents:2000,sourceCurrency:'USD',targetCurrency:'GBP',note:'Thanks for coffee',clientTxId:'tx-allen-1'}});
+  assert.equal(tx1.status,200);
+  assert.equal(tx1.body.deduplicated,false);
+  assert.equal(tx1.body.transaction.targetAmountCents,1580);
+
+  const tx2=await t.request('/api/organizer/demo-pay',{method:'POST',auth:true,body:{contactId:'allen',sourceAmountCents:2000,sourceCurrency:'USD',targetCurrency:'GBP',note:'Thanks for coffee',clientTxId:'tx-allen-1'}});
+  assert.equal(tx2.status,200);
+  assert.equal(tx2.body.deduplicated,true);
+  assert.equal(tx2.body.transaction.id,tx1.body.transaction.id);
+
+  const st=await t.request('/api/organizer/state',{auth:true});
+  assert.equal(st.body.demoTransactions.length,1);
+});
+
+test('demo requests start Waiting for payment, auto-settle persistently on due timestamps, save rent rules opt-in, and reset cleanly',async()=>{
+  const t=setup();
+  const created=await t.request('/api/organizer/requests',{method:'POST',auth:true,body:{title:'Rent Dec',kind:'rent',channel:'demo',demoAutoSettle:true,dueDate:'2026-12-01',recipients:[{name:'Maya',contactId:'maya',amountCents:80000,currency:'USD',reason:'December rent'},{name:'Arun',contactId:'arun',amountCents:80000,currency:'USD',reason:'December rent'}]}});
+  assert.equal(created.status,200);
+  assert.equal(created.body.request.recipients[0].status,'Waiting for payment');
+  assert(Number.isFinite(created.body.request.recipients[0].settleAt));
+
+  // Fast-forward first recipient due timestamp only -> first settles, second waits
+  t.store.state.reimbursements[0].recipients[0].settleAt=Date.now()-100;
+  t.store.state.reimbursements[0].recipients[1].settleAt=Date.now()+60000;
+  await t.store.save();
+
+  const st=await t.request('/api/organizer/state',{auth:true});
+  assert.equal(st.body.reimbursements[0].recipients[0].status,'Paid');
+  assert.equal(st.body.reimbursements[0].recipients[0].demoSettled,true);
+  assert.equal(st.body.reimbursements[0].recipients[1].status,'Waiting for payment');
+
+  // Opt-in rent rule & reset
+  const rule=await t.request('/api/organizer/rent-rule',{method:'POST',auth:true,body:{contactIds:['maya','arun'],totalCents:160000,currency:'USD',mode:'equal',dayOfMonth:1}});
+  assert.equal(rule.status,200);assert.equal(rule.body.savedRentRule.totalCents,160000);
+  const reset=await t.request('/api/organizer/reset-demo',{method:'POST',auth:true,body:{}});
+  assert.equal(reset.status,200);
+  const clean=await t.request('/api/organizer/state',{auth:true});
+  assert.equal(clean.body.reimbursements.length,0);
+  assert.equal(clean.body.demoTransactions.length,0);
+  assert.equal(clean.body.savedRentRule,null);
 });

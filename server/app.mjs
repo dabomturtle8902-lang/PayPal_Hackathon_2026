@@ -2,7 +2,7 @@ import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {resolve, extname, sep} from 'node:path';
 import {timingSafeEqual, randomUUID} from 'node:crypto';
-import {names, secret} from './store.mjs';
+import {FX_RATES_USD, defaultContacts, fxQuote, names, normalizeCurrency, secret} from './store.mjs';
 
 const fail = (status, message) => { throw Object.assign(new Error(message), {status}); };
 function equal(a, b) {
@@ -114,32 +114,58 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
     catch { fail(400, 'Invalid JSON.'); }
   }
 
-  function validateRecipients(rawRecipients) {
+  function reconcileDueDemoSettlements() {
+    let changed = false;
+    const now = Date.now();
+    for (const reqItem of store.state.reimbursements || []) {
+      for (const r of reqItem.recipients || []) {
+        if (r.status === 'Waiting for payment' && Number.isFinite(r.settleAt) && now >= r.settleAt) {
+          r.status = 'Paid';
+          r.demoSettled = true;
+          r.settledAt ||= new Date(r.settleAt).toISOString();
+          r.receiptRef ||= `DEMO-${secret().slice(0, 4).toUpperCase()}`;
+          changed = true;
+        }
+      }
+    }
+    return changed;
+  }
+
+  function validateRecipients(rawRecipients, opts = {}) {
     if (!Array.isArray(rawRecipients) || !rawRecipients.length || rawRecipients.length > 20) {
       fail(400, 'Add between 1 and 20 recipients before confirming.');
     }
-    return rawRecipients.map(r => {
+    const demoAutoSettle = Boolean(opts.demoAutoSettle);
+    const now = Date.now();
+    return rawRecipients.map((r, index) => {
       const name = typeof r?.name === 'string' ? r.name.trim().slice(0, 80) : '';
       const amountCents = Number(r?.amountCents);
-      const currency = typeof r?.currency === 'string' && /^[A-Z]{3}$/.test(r.currency.trim().toUpperCase())
-        ? r.currency.trim().toUpperCase()
-        : 'USD';
+      const currency = normalizeCurrency(r?.currency, 'USD');
+      const targetCurrency = normalizeCurrency(r?.targetCurrency || currency, currency);
       const reason = typeof r?.reason === 'string' && r.reason.trim() ? r.reason.trim().slice(0, 140) : 'Shared expense';
       if (!name) fail(400, 'Every request row requires a recipient name.');
-      if (!Number.isInteger(amountCents) || amountCents <= 0 || amountCents > 10000000) {
+      if (!Number.isInteger(amountCents) || amountCents <= 0 || amountCents > 100000000) {
         fail(400, `Enter a valid positive amount for ${name}.`);
       }
+      const quote = fxQuote(amountCents, currency, targetCurrency);
+      const jitterMs = (index * 2400) + 2200 + ((index * 537) % 700);
       return {
         id: `REC-${secret().slice(0, 6).toUpperCase()}`,
         name,
         contactId: typeof r?.contactId === 'string' ? r.contactId : null,
         amountCents,
         currency,
+        targetCurrency,
+        targetAmountCents: quote.targetAmountCents,
+        fxRate: quote.rate,
         reason,
         shareToken: secret(),
-        status: 'Created',
-        deliveryStatus: 'Created',
-        deliveryMessage: '',
+        status: demoAutoSettle ? 'Waiting for payment' : 'Created',
+        deliveryStatus: demoAutoSettle ? 'Sent' : 'Created',
+        deliveryMessage: demoAutoSettle ? 'Demo request active — awaiting simulated payer confirmation.' : '',
+        settleAt: demoAutoSettle ? now + jitterMs : null,
+        demoSettled: false,
+        settledAt: null,
         receiptRef: null,
       };
     });
@@ -225,14 +251,110 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
           });
         }
         if (path === '/api/organizer/state' && req.method === 'GET') {
-          return send(200, {
-            purchase: {
-              purchaseId: 'SS-001', lamp: store.state.lamp, published: store.state.published,
-              participants: participants().map(admin),
-            },
-            contacts: store.state.contacts || [],
-            reimbursements: (store.state.reimbursements || []).map(adminReimbursement),
-            providers: providerSummary(),
+          return await store.exclusive(async () => {
+            if (reconcileDueDemoSettlements()) await store.save();
+            return send(200, {
+              purchase: {
+                purchaseId: 'SS-001', lamp: store.state.lamp, published: store.state.published,
+                participants: participants().map(admin),
+              },
+              contacts: store.state.contacts || [],
+              reimbursements: (store.state.reimbursements || []).map(adminReimbursement),
+              demoTransactions: store.state.demoTransactions || [],
+              savedRentRule: store.state.savedRentRule || null,
+              fxRates: FX_RATES_USD,
+              providers: providerSummary(),
+            });
+          });
+        }
+        if (path === '/api/organizer/demo-pay' && req.method === 'POST') {
+          const input = await body(req);
+          const clientTxId = typeof input?.clientTxId === 'string' ? input.clientTxId.trim().slice(0, 80) : '';
+          const contacts = store.state.contacts || [];
+          const contact = contacts.find(c => c.id === input?.contactId)
+            || contacts.find(c => c.name.toLowerCase() === String(input?.recipientName || '').trim().toLowerCase());
+          const recipientName = contact?.name || (typeof input?.recipientName === 'string' ? input.recipientName.trim().slice(0, 80) : '');
+          if (!recipientName) fail(400, 'Choose a recipient before paying.');
+          const sourceCurrency = normalizeCurrency(input?.sourceCurrency, 'USD');
+          const targetCurrency = normalizeCurrency(input?.targetCurrency || contact?.currency || sourceCurrency, sourceCurrency);
+          const sourceAmountCents = Number(input?.sourceAmountCents);
+          if (!Number.isInteger(sourceAmountCents) || sourceAmountCents <= 0 || sourceAmountCents > 100000000) {
+            fail(400, 'Enter a valid positive amount.');
+          }
+          const note = typeof input?.note === 'string' && input.note.trim() ? input.note.trim().slice(0, 140) : 'Payment';
+          return await store.exclusive(async () => {
+            store.state.demoTransactions ||= [];
+            if (clientTxId) {
+              const existing = store.state.demoTransactions.find(tx => tx.clientTxId === clientTxId);
+              if (existing) return send(200, {transaction: existing, deduplicated: true});
+            }
+            const quote = fxQuote(sourceAmountCents, sourceCurrency, targetCurrency);
+            const tx = {
+              id: `DTX-${secret().slice(0, 6).toUpperCase()}`,
+              clientTxId: clientTxId || randomUUID(),
+              type: 'demo-send',
+              recipientName,
+              contactId: contact?.id || null,
+              country: contact?.country || '',
+              flag: contact?.flag || '',
+              sourceAmountCents: quote.sourceAmountCents,
+              sourceCurrency: quote.sourceCurrency,
+              targetAmountCents: quote.targetAmountCents,
+              targetCurrency: quote.targetCurrency,
+              inrEquivalentCents: quote.inrEquivalentCents,
+              rate: quote.rate,
+              note,
+              status: 'Completed',
+              demo: true,
+              createdAt: new Date().toISOString(),
+            };
+            store.state.demoTransactions.unshift(tx);
+            await store.save();
+            return send(200, {transaction: tx, deduplicated: false});
+          });
+        }
+        if (path === '/api/organizer/rent-rule' && req.method === 'POST') {
+          const input = await body(req);
+          return await store.exclusive(async () => {
+            if (input?.clear) {
+              store.state.savedRentRule = null;
+            } else {
+              const contactIds = Array.isArray(input?.contactIds) ? input.contactIds.map(String).slice(0, 20) : [];
+              const totalCents = Math.max(0, Number.isInteger(input?.totalCents) ? input.totalCents : 0);
+              if (!contactIds.length || totalCents <= 0) fail(400, 'Select household contacts and a positive rent amount before saving.');
+              store.state.savedRentRule = {
+                contactIds,
+                totalCents,
+                currency: normalizeCurrency(input?.currency, 'USD'),
+                mode: input?.mode === 'custom' ? 'custom' : 'equal',
+                customShares: input?.customShares && typeof input.customShares === 'object' ? input.customShares : {},
+                dayOfMonth: Math.min(28, Math.max(1, Number(input?.dayOfMonth) || 1)),
+                savedAt: new Date().toISOString(),
+              };
+            }
+            await store.save();
+            return send(200, {savedRentRule: store.state.savedRentRule});
+          });
+        }
+        if (path === '/api/organizer/reset-demo' && req.method === 'POST') {
+          return await store.exclusive(async () => {
+            store.state.lamp = 'Maya';
+            store.state.published = false;
+            store.state.participants = Object.fromEntries(names.map(n => [n, {
+              name: n,
+              amountCents: n === 'Maya' ? 7000 : 4000,
+              shareToken: secret(),
+              status: 'Awaiting payment',
+              orders: [],
+              receipt: null,
+            }]));
+            store.state.contacts = defaultContacts();
+            store.state.reimbursements = [];
+            store.state.demoTransactions = [];
+            store.state.savedRentRule = null;
+            store.state.events = [];
+            await store.save();
+            return send(200, {ok: true});
           });
         }
         if (path === '/api/organizer/contacts' && req.method === 'POST') {
@@ -293,6 +415,8 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
             transcript: input.transcript,
             contacts: store.state.contacts || [],
             bill: input.bill || null,
+            currentDraft: Array.isArray(input?.currentDraft) ? input.currentDraft : null,
+            lastIntent: typeof input?.lastIntent === 'string' ? input.lastIntent : '',
           });
           return send(200, draft);
         }
@@ -317,8 +441,10 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
         }
         if (path === '/api/organizer/requests' && req.method === 'POST') {
           const input = await body(req, 2 * 1024 * 1024);
-          const recipients = validateRecipients(input?.recipients);
-          const channel = ['link', 'manual', 'email', 'sms'].includes(input?.channel) ? input.channel : 'link';
+          const channel = ['demo', 'link', 'manual', 'email', 'sms'].includes(input?.channel) ? input.channel : 'demo';
+          const demoAutoSettle = Boolean(input?.demoAutoSettle || channel === 'demo');
+          const clientRequestId = typeof input?.clientRequestId === 'string' ? input.clientRequestId.trim().slice(0, 80) : '';
+          const recipients = validateRecipients(input?.recipients, {demoAutoSettle});
           const items = Array.isArray(input?.items)
             ? input.items.slice(0, 30).map(i => ({
                 name: String(i?.name || 'Item').trim().slice(0, 100),
@@ -331,14 +457,22 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
 
           return await store.exclusive(async () => {
             store.state.reimbursements ||= [];
+            if (clientRequestId) {
+              const dup = store.state.reimbursements.find(r => r.clientRequestId === clientRequestId);
+              if (dup) return send(200, {request: adminReimbursement(dup), deliveryOutcomes: [], deduplicated: true});
+            }
             const record = {
               id: `REQ-${secret().slice(0, 6).toUpperCase()}`,
+              clientRequestId: clientRequestId || randomUUID(),
               createdAt: new Date().toISOString(),
-              mode: 'reimbursement',
-              title: typeof input?.title === 'string' && input.title.trim() ? input.title.trim().slice(0, 100) : (String(input?.merchant || '').trim() || 'Shared bill reimbursement'),
-              merchant: typeof input?.merchant === 'string' && input.merchant.trim() ? input.merchant.trim().slice(0, 100) : 'Photographed receipt',
+              mode: demoAutoSettle ? 'demo-request' : 'reimbursement',
+              kind: ['receipt', 'request', 'rent', 'store'].includes(input?.kind) ? input.kind : 'request',
+              demo: demoAutoSettle,
+              dueDate: typeof input?.dueDate === 'string' ? input.dueDate.trim().slice(0, 40) : '',
+              title: typeof input?.title === 'string' && input.title.trim() ? input.title.trim().slice(0, 100) : (String(input?.merchant || '').trim() || 'Money request'),
+              merchant: typeof input?.merchant === 'string' && input.merchant.trim() ? input.merchant.trim().slice(0, 100) : 'Personal request',
               billDate: typeof input?.billDate === 'string' ? input.billDate.trim().slice(0, 40) : '',
-              currency: 'USD',
+              currency: normalizeCurrency(input?.currency, recipients[0]?.currency || 'USD'),
               items,
               taxCents: Math.max(0, Number.isInteger(input?.taxCents) ? input.taxCents : 0),
               tipCents: Math.max(0, Number.isInteger(input?.tipCents) ? input.tipCents : 0),
@@ -348,7 +482,9 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
               channel,
               recipients,
             };
-            const deliveryOutcomes = await attemptChannelDelivery(record, channel);
+            const deliveryOutcomes = demoAutoSettle
+              ? recipients.map(r => ({recipient: r.name, ok: true, status: r.status, deliveryStatus: r.deliveryStatus, message: r.deliveryMessage}))
+              : await attemptChannelDelivery(record, channel);
             store.state.reimbursements.unshift(record);
             await store.save();
             return send(200, {request: adminReimbursement(record), deliveryOutcomes});

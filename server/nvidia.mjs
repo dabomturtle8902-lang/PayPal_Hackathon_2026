@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {promisify} from 'node:util';
+import {formatMoney, fxQuote, normalizeCurrency} from './store.mjs';
 
 const run = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -117,29 +118,67 @@ export function matchContact(name, contacts = []) {
   return {contact: null, ambiguous: false, candidates: []};
 }
 
+export function buildAssistantReply({intent = 'request', recipients = [], needsClarification = false, clarificationPrompt = ''}) {
+  if (needsClarification) {
+    return clarificationPrompt || 'Which contact and amount did you want to use?';
+  }
+  if (!recipients.length) {
+    return 'Tell me who to pay or request money from, and how much.';
+  }
+  if (intent === 'send' && recipients.length === 1) {
+    const r = recipients[0];
+    const targetCurr = normalizeCurrency(r.targetCurrency || r.currency, r.currency);
+    const q = fxQuote(r.amountCents, r.currency, targetCurr);
+    const conv = q.sourceCurrency !== q.targetCurrency
+      ? ` (about ${formatMoney(q.targetAmountCents, q.targetCurrency, true)})`
+      : '';
+    const note = r.reason && r.reason !== 'Shared expense' && r.reason !== 'Payment'
+      ? ` for ${r.reason}`
+      : '';
+    const loc = r.country ? ` in ${r.country}` : '';
+    return `Prepared ${formatMoney(q.sourceAmountCents, q.sourceCurrency, true)}${conv} for ${r.name}${loc}${note}. Verify the recipient and amount before you pay.`;
+  }
+  const parts = recipients.map(r => `${r.name} owes ${formatMoney(r.amountCents, r.currency)} for ${r.reason}`);
+  if (parts.length === 1) return `${parts[0]}. Ready to create this request?`;
+  if (parts.length === 2) return `${parts[0]} and ${parts[1]}. Ready to create both requests?`;
+  return `${parts.slice(0, -1).join(', ')}, and ${parts.at(-1)}. Ready to create these ${parts.length} requests?`;
+}
+
 export function normalizeParsedRequest(raw, contacts = [], bill = null) {
+  const intent = raw?.intent === 'send' ? 'send' : 'request';
   const rows = Array.isArray(raw?.recipients) ? raw.recipients : [];
   const recipients = rows.slice(0, 20).map((r, index) => {
     const rawName = String(r?.name || '').trim().slice(0, 80);
     const amountCents = Number.isInteger(r?.amountCents) ? r.amountCents : toCents(r?.amount ?? 0);
-    const currency = typeof r?.currency === 'string' && /^[A-Z]{3}$/.test(r.currency.trim().toUpperCase())
-      ? r.currency.trim().toUpperCase()
-      : (bill?.currency || 'USD');
-    const reason = String(r?.reason || '').trim().slice(0, 140) || 'Shared expense';
+    const explicitCurr = typeof r?.currency === 'string' && r.currency.trim()
+      ? normalizeCurrency(r.currency, '')
+      : '';
+    const reason = String(r?.reason || '').trim().slice(0, 140) || (intent === 'send' ? 'Payment' : 'Shared expense');
     const match = matchContact(rawName, contacts);
+    const currency = explicitCurr || (intent === 'send' ? (match.contact?.currency || 'USD') : (bill?.currency || 'USD'));
+    const targetCurrency = normalizeCurrency(match.contact?.currency || currency, currency);
     const ambiguousName = Boolean(r?.ambiguousName || match.ambiguous || !rawName);
     const unknownContact = Boolean(rawName && !match.contact && !match.ambiguous);
     const ambiguousAmount = Boolean(r?.ambiguousAmount || amountCents <= 0);
+    const normalizedCents = currency === 'JPY' && Math.round(amountCents) < 100 && amountCents > 0
+      ? Math.round(amountCents) * 100
+      : Math.max(0, amountCents);
+    const quote = fxQuote(normalizedCents, currency, targetCurrency);
     return {
       id: `draft-${index + 1}`,
       name: match.contact ? match.contact.name : (rawName || `Recipient ${index + 1}`),
       contactId: match.contact?.id || null,
+      country: match.contact?.country || '',
+      flag: match.contact?.flag || '',
       known: Boolean(match.contact),
       ambiguous: ambiguousName || ambiguousAmount || unknownContact,
       unknownContact,
       candidates: match.candidates.map(c => c.name),
-      amountCents: Math.max(0, amountCents),
+      amountCents: normalizedCents,
       currency,
+      targetCurrency,
+      targetAmountCents: quote.targetAmountCents,
+      fxRate: quote.rate,
       reason,
     };
   });
@@ -153,20 +192,29 @@ export function normalizeParsedRequest(raw, contacts = [], bill = null) {
 
   const clarificationPrompt = String(raw?.clarificationPrompt || '').trim()
     || (recipients.length === 0
-      ? 'Could not detect any recipient names and dollar amounts. Add recipients manually below.'
+      ? 'Could not detect a contact and amount. Who is this for, and how much?'
       : recipients.find(r => r.unknownContact)
-        ? `Verify unknown recipient "${recipients.find(r => r.unknownContact).name}" against your contacts.`
+        ? `Verify "${recipients.find(r => r.unknownContact).name}" against your contacts (${contacts.map(c => c.name).slice(0, 6).join(', ')}).`
         : recipients.find(r => r.ambiguous)
-          ? 'Please confirm the ambiguous recipient name or amount below.'
+          ? 'Please confirm the contact or amount before continuing.'
           : '');
 
+  const replyText = buildAssistantReply({
+    intent,
+    recipients,
+    needsClarification,
+    clarificationPrompt,
+  });
+
   return {
+    intent,
     recipients,
     allocatedCents,
     billTotalCents,
     unallocatedCents,
     needsClarification,
     clarificationPrompt,
+    replyText,
   };
 }
 
@@ -254,8 +302,8 @@ export function createNvidia({key, python, fetchImpl = fetch} = {}) {
       }];
       try {
         const {content, modelUsed, fallbackUsed, primaryError} = await callWithFallback([
-          {model: DEEPSEEK_MODEL, body: {messages}, timeoutMs: deepseekTimeoutMs},
           {model: FALLBACK_VISION_MODEL, body: {messages, chat_template_kwargs: {enable_thinking: false}}, timeoutMs: 20000},
+          {model: DEEPSEEK_MODEL, body: {messages}, timeoutMs: deepseekTimeoutMs},
         ]);
         const parsed = stripJsonFences(content);
         return {
@@ -269,14 +317,24 @@ export function createNvidia({key, python, fetchImpl = fetch} = {}) {
       }
     },
 
-    async parseRequest({transcript, contacts = [], bill = null}) {
+    async parseRequest({transcript, contacts = [], bill = null, currentDraft = null, lastIntent = ''}) {
       requireKey();
-      const contactNames = contacts.map(c => c.name).join(', ') || 'Maya, Arun, Leah';
-      const billHint = bill ? `Extracted bill context: merchant="${bill.merchant}", totalCents=${bill.totalCents}, currency=${bill.currency || 'USD'}.` : 'No bill total constraint.';
+      const contactList = contacts.length
+        ? contacts.map(c => `${c.name} (${c.country || 'US'}, ${c.currency || 'USD'})`).join(', ')
+        : 'Allen (UK, GBP), Maya (US, USD), Arun (Canada, CAD), Sofia (Germany, EUR), Yuki (Japan, JPY), Leah (US, USD)';
+      const billHint = bill?.totalCents > 0
+        ? `Extracted bill context: merchant="${bill.merchant}", totalCents=${bill.totalCents}, currency=${bill.currency || 'USD'}.`
+        : 'No bill total constraint.';
+      const draftHint = Array.isArray(currentDraft) && currentDraft.length
+        ? `Active conversation draft from previous turn (intent=${lastIntent || 'request'}): ${JSON.stringify(currentDraft.map(r => ({name: r.name, amountCents: r.amountCents, currency: r.currency, reason: r.reason, unknownContact: r.unknownContact, ambiguous: r.ambiguous})))}. If the user is answering a clarification or editing an amount/person in that draft, merge and update those rows instead of discarding untouched rows.`
+        : 'No prior draft.';
       const messages = [
         {
           role: 'system',
-          content: `Parse a spoken or typed expense-split / payment request into JSON. Known contacts: [${contactNames}]. ${billHint} Extract EVERY named or phonetic person paired with an amount (for example if speech-to-text transcribed "Arun" as "a run" next to "$15 for drinks", match Arun or keep the raw phrase with ambiguousName=true — never drop a dollar amount). Return ONLY raw JSON with shape: {"recipients":[{"name":string,"amountCents":integer,"currency":"USD","reason":string,"ambiguousName":boolean,"ambiguousAmount":boolean}],"needsClarification":boolean,"clarificationPrompt":string}. Convert spoken numbers cleanly ("twenty dollars" -> 2000, "fifteen" -> 1500).`,
+          content: `Parse a spoken or typed payment instruction into JSON. Known contacts: [${contactList}]. ${billHint} ${draftHint}
+Determine intent: "send" if the user is sending/paying someone (e.g. "Allen, send him 20 dollars saying thanks for coffee", "pay Maya $15"), OR "request" if requesting/splitting/asking money ("Ask Maya for $20 for dinner and Arun for $15 for drinks").
+Extract EVERY person paired with an amount (if phonetic STT says "a run" near drinks/amount, match Arun or mark ambiguousName=true). Preserve explicit spoken/typed currency ("dollars"/"USD" -> "USD", "pounds"/"GBP" -> "GBP", "euros"/"EUR" -> "EUR", "CAD" -> "CAD", "yen"/"JPY" -> "JPY"); otherwise leave currency empty so the contact preference applies. Convert spoken numbers cleanly ("twenty dollars" -> 2000, "fifteen" -> 1500; for JPY use major*100 e.g. "3000 yen" -> 300000).
+Return ONLY raw JSON: {"intent":"send"|"request","recipients":[{"name":string,"amountCents":integer,"currency":string,"reason":string,"ambiguousName":boolean,"ambiguousAmount":boolean}],"needsClarification":boolean,"clarificationPrompt":string}.`,
         },
         {role: 'user', content: transcript},
       ];

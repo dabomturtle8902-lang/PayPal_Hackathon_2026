@@ -620,8 +620,148 @@ p {
 
 .hub-actions-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 12px;
+}
+
+.ask-banner {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #FFFFFF;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  transition: background-color 140ms ease;
+}
+
+.ask-banner:hover { background: rgba(255, 255, 255, 0.14); }
+
+.contact-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  margin-bottom: 16px;
+  scrollbar-width: none;
+}
+
+.contact-strip::-webkit-scrollbar { display: none; }
+
+.contact-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--navy);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: border-color 140ms ease;
+}
+
+.contact-pill:hover { border-color: var(--primary); }
+
+.fx-box {
+  margin-top: 12px;
+  padding: 14px;
+  border-radius: 14px;
+  background: var(--surface-tint);
+  border: 1px solid #CFE0FF;
+}
+
+.chat-shell {
+  max-width: 820px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chat-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chat-bubble {
+  padding: 14px 16px;
+  border-radius: 16px;
+  max-width: min(640px, 100%);
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.chat-bubble.user {
+  align-self: flex-end;
+  background: var(--navy);
+  color: #FFFFFF;
+  border-color: var(--navy);
+}
+
+.chat-bubble.assistant {
+  align-self: flex-start;
+  width: 100%;
+}
+
+.chat-composer {
+  position: sticky;
+  bottom: 12px;
+  background: var(--surface);
+  border: 1.5px solid var(--line);
+  border-radius: 16px;
+  padding: 12px;
+  box-shadow: 0 8px 24px rgba(24, 32, 53, 0.08);
+}
+
+.composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.composer-row input,
+.composer-row textarea {
+  flex: 1 1 220px;
+  min-height: 44px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1.5px solid var(--line);
+  background: var(--surface-subtle);
+  color: var(--navy);
+}
+
+.settled-flash {
+  animation: settledPulse 1.6s ease-out;
+}
+
+@keyframes settledPulse {
+  0% { background: var(--teal-bg); }
+  100% { background: transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settled-flash,
+  .skeleton,
+  .btn,
+  .hub-tile,
+  .shortcut-card {
+    animation: none !important;
+    transition: none !important;
+  }
 }
 
 .hub-tile {
@@ -1290,10 +1430,15 @@ p {
     z-index: 40;
   }
   .hub-actions-grid {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+  .hub-tile {
+    min-height: 90px;
+    padding: 12px 6px;
   }
   .shortcuts-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, 1fr);
   }
   .split-grid,
   .store-grid,
@@ -1327,7 +1472,7 @@ p {
     gap: 14px;
   }
   .hub-actions-grid {
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(3, 1fr);
   }
   .shortcuts-grid {
     grid-template-columns: repeat(3, 1fr);
