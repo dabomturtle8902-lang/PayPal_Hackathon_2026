@@ -75,3 +75,17 @@ node ../website/test/demo.cjs
 Tests use mocked PayPal responses and do not contact PayPal or require credentials. Actual approval and capture must still be tested by you with your Sandbox buyer and seller accounts.
 
 References: [Sandbox setup](https://github.com/paypaldev/getting-started-with-paypal-sandbox), [Checkout integration](https://developer.paypal.com/studio/checkout/standard/integrate), [Orders API](https://developer.paypal.com/api/orders/v2), [Webhook verification](https://developer.paypal.com/api/rest/webhooks/rest/).
+
+## Hosted NVIDIA models
+
+In `server/.env`, add `NVIDIA_API_KEY=<your key>`. Keep the key in that ignored local file. Both providers use it server-side. The connected web and Flutter organizer screens use DeepSeek for **Prepare AI split** and Chatterbox for **Read split aloud**. The demo supports equal shares for the essentials and one lamp owner. The model proposes the owner, and the organizer confirms before publication.
+
+Install the Python speech client and start Node from the server folder:
+
+```powershell
+cd server
+python -m pip install -r requirements.txt
+npm start
+```
+
+If the speech client lives in a virtual environment, set `NVIDIA_PYTHON` in `server/.env` to the path of that environment's Python executable. Restart after changing settings. At http://localhost:3000, connect with the organizer key printed by the server, open the demo purchase, and ask to assign the lamp to Leah. The suggested amounts should be Maya $40, Arun $40, and Leah $70. Select **Read split aloud** to hear the amounts. This check does not require PayPal credentials or publishing the split.

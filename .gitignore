@@ -8,6 +8,8 @@ build/
 flutter_app/.flutter-plugins*
 node_modules/
 server/data/
+.venv/
+*/.venv/
 
 # Local Flutter SDK and editor state
 /flutter/

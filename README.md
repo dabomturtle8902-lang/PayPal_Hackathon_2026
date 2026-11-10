@@ -40,7 +40,7 @@ Do not rerun `flutter create` if the needed platform folders already exist. Add 
 
 ## Visual demo and later workflows
 
-Serving `website/dist` with a static server still opens the original visual walkthrough. It is separate from backend checkout and cannot process payments. AI allocation remains a deterministic shared-essentials/lamp rule. Rent and shop remain later-workflow demos. Medfarm assets were not provided, so the visual treatment follows the attached SplitSync mockups.
+Serving `website/dist` with a static server still opens the original visual walkthrough. It is separate from backend checkout and cannot process payments. The connected app uses DeepSeek to propose the lamp owner within the fixed demo bill, and Chatterbox reads the reviewed split aloud. The static demo still uses a fixed allocation rule. Rent and shop remain later-workflow demos. Medfarm assets were not provided, so the visual treatment follows the attached SplitSync mockups.
 
 The backend is intended for one household's Sandbox testing with one Node process and a persistent ledger. Production account management, refunds, disputes, multi-merchant onboarding, payouts and rent payments are outside this implementation. See [VALIDATION.md](VALIDATION.md) for verification limits.
 

@@ -5,8 +5,9 @@ import {mkdtemp, rm, readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createApp} from '../app.mjs';
-import {Store, newState} from '../store.mjs';
+import {Store, newState, normalizeState} from '../store.mjs';
 import {PayPal} from '../paypal.mjs';
+import {normalizeExtractedBill, normalizeParsedRequest} from '../nvidia.mjs';
 const organizerToken='organizer-test-key-abcdefghijklmnopqrstuvwxyz';
 const baseUrl='http://localhost:3000';
 function fakePayPal(){
@@ -18,9 +19,9 @@ function fakePayPal(){
     async verify(_event,headers){return headers['paypal-transmission-sig']==='valid';}
   };
 }
-function setup({store, paypal=fakePayPal()}={}){
+function setup({store, paypal=fakePayPal(), nvidia, delivery}={}){
   store ||= new Store();store.state ||= newState();
-  const {handler}=createApp({store,paypal,organizerToken,baseUrl,staticDir:join(import.meta.dirname,'../../website/dist')});
+  const {handler}=createApp({store,paypal,nvidia,delivery,organizerToken,baseUrl,staticDir:join(import.meta.dirname,'../../website/dist')});
   async function request(path,{method='GET',body,auth=false,headers={}}={}){
     const req=Readable.from(body===undefined?[]:[Buffer.from(JSON.stringify(body))]);
     req.url=path;req.method=method;req.headers={host:'localhost:3000',...(body===undefined?{}:{'content-type':'application/json'}),...(auth?{authorization:'Bearer '+organizerToken}:{}),...headers};
@@ -131,4 +132,96 @@ test('PayPal webhook postback requires configured webhook and validated headers'
 test('missing Sandbox credentials do not create an attempt or lock allocation edits',async()=>{
   const t=setup();t.paypal.configured=false;await t.publish();assert.equal((await t.create()).status,503);
   assert.equal(t.store.state.participants.Maya.orders.length,0);assert.equal((await t.publish('Arun')).status,200);
+});
+test('organizer logout clears session cookie and AI endpoints handle Leah split, TTS audio, and 503 unavailability',async()=>{
+  const t0=setup();
+  const unconfigured=await t0.request('/api/organizer/suggest-split',{method:'POST',body:{instruction:'Lamp for Leah'},auth:true});
+  assert.equal(unconfigured.status,503);
+  const ttsUnconfigured=await t0.request('/api/organizer/read-split',{method:'POST',body:{lamp:'Leah'},auth:true});
+  assert.equal(ttsUnconfigured.status,503);
+
+  const mockNvidia={
+    configured:true,
+    async suggest(instruction){return instruction.toLowerCase().includes('leah')?'Leah':'CLARIFY';},
+    async speak(){return Buffer.from('RIFFmockaudio');}
+  };
+  const t=setup({nvidia:mockNvidia});
+  const suggested=await t.request('/api/organizer/suggest-split',{method:'POST',body:{instruction:'Assign the $30 lamp to Leah'},auth:true});
+  assert.equal(suggested.status,200);assert.equal(suggested.body.lamp,'Leah');
+  await t.publish('Leah');
+  assert.equal(t.store.state.participants.Maya.amountCents,4000);
+  assert.equal(t.store.state.participants.Arun.amountCents,4000);
+  assert.equal(t.store.state.participants.Leah.amountCents,7000);
+  const tts=await t.request('/api/organizer/read-split',{method:'POST',body:{lamp:'Leah'},auth:true});
+  assert.equal(tts.status,200);assert.equal(Buffer.from(tts.body.audio,'base64').toString(),'RIFFmockaudio');
+
+  const logout=await t.request('/api/organizer/logout',{method:'POST',body:{}});
+  assert.equal(logout.status,200);assert.match(logout.headers['set-cookie'],/Max-Age=0/);
+  const font=await t.request('/fonts/PlusJakartaSans-Regular.ttf');
+  assert.equal(font.status,200);assert.equal(font.headers['content-type'],'font/ttf');
+});
+
+test('bill normalization flags unreadable fields and total mismatches cleanly',()=>{
+  const b=normalizeExtractedBill({merchant:'Bistro 24',date:'',currency:'USD',items:[{name:'Pasta',amountCents:2000},{name:'Drinks',amountCents:1500}],taxCents:300,tipCents:500,totalCents:4800});
+  assert.equal(b.totalMismatch,true);
+  assert.equal(b.computedTotalCents,4300);
+  assert(b.unreadableFields.includes('date'));
+});
+
+test('request parser resolves known contacts, flags unknowns, and tracks unallocated bill balance',()=>{
+  const contacts=[{id:'maya',name:'Maya'},{id:'arun',name:'Arun'}];
+  const parsed=normalizeParsedRequest({recipients:[{name:'Maya',amountCents:2000,reason:'dinner'},{name:'Arun',amountCents:1500,reason:'drinks'},{name:'alex',amountCents:500,reason:'dessert'}]},contacts,{totalCents:4500,currency:'USD'});
+  assert.equal(parsed.recipients[0].known,true);
+  assert.equal(parsed.recipients[2].unknownContact,true);
+  assert.equal(parsed.needsClarification,true);
+  assert.equal(parsed.unallocatedCents,500);
+});
+
+test('reimbursement requests stay Created when delivery fails, isolate tokens, and never auto-attach PayPal merchant checkout',async()=>{
+  const mockNvidia={
+    configured:true,
+    async extractBill(){return normalizeExtractedBill({merchant:'Olive Kitchen',date:'2026-11-10',items:[{name:'Dinner',amountCents:2000},{name:'Drinks',amountCents:1500}],totalCents:3500});},
+    async transcribe(){return {transcript:'Ask Maya for twenty dollars for dinner and Arun for fifteen for drinks.',engine:'mock-stt'};},
+    async parseRequest({transcript}){assert.match(transcript,/Maya/);return normalizeParsedRequest({recipients:[{name:'Maya',amountCents:2000,reason:'dinner'},{name:'Arun',amountCents:1500,reason:'drinks'}]},[{id:'maya',name:'Maya'},{id:'arun',name:'Arun'}],{totalCents:3500,currency:'USD'});},
+    async speak(){return Buffer.from('RIFFconfirmvoice');},
+  };
+  const failingDelivery={emailConfigured:true,smsConfigured:false,async send(){return {ok:false,message:'SMTP refused connection'};}};
+  const t=setup({nvidia:mockNvidia,delivery:failingDelivery});
+
+  assert.equal((await t.request('/api/organizer/state')).status,401);
+  const stt=await t.request('/api/organizer/transcribe',{method:'POST',body:{audioBase64:'dGVzdA==',mimeType:'audio/wav'},auth:true});
+  assert.equal(stt.status,200);assert.match(stt.body.transcript,/Maya/);
+
+  const parsed=await t.request('/api/organizer/parse-request',{method:'POST',body:{transcript:stt.body.transcript,bill:{totalCents:3500,currency:'USD'}},auth:true});
+  assert.equal(parsed.status,200);assert.equal(parsed.body.recipients.length,2);assert.equal(parsed.body.unallocatedCents,0);
+
+  const voice=await t.request('/api/organizer/read-text',{method:'POST',body:{text:"I'll request $20 from Maya for dinner and $15 from Arun for drinks. Review and send?"},auth:true});
+  assert.equal(voice.status,200);assert.equal(Buffer.from(voice.body.audio,'base64').toString(),'RIFFconfirmvoice');
+
+  const created=await t.request('/api/organizer/requests',{method:'POST',body:{title:'Olive Kitchen',merchant:'Olive Kitchen',totalCents:3500,channel:'email',recipients:[{name:'Maya',amountCents:2000,reason:'dinner'},{name:'Arun',amountCents:1500,reason:'drinks'}]},auth:true});
+  assert.equal(created.status,200);
+  const reqRecord=created.body.request;
+  assert.equal(reqRecord.recipients[0].status,'Created');
+  assert.equal(reqRecord.recipients[0].deliveryStatus,'Failed');
+
+  const mayaToken=reqRecord.recipients[0].shareToken;
+  const arunToken=reqRecord.recipients[1].shareToken;
+  const pubMaya=await t.request(`/api/reimbursements/${mayaToken}`);
+  assert.equal(pubMaya.status,200);
+  assert.equal(pubMaya.body.recipientName,'Maya');
+  assert.equal(pubMaya.body.amountCents,2000);
+  assert.equal(pubMaya.body.paypalCheckoutSupported,false);
+  assert(!JSON.stringify(pubMaya.body).includes(arunToken));
+
+  const shared=await t.request(`/api/organizer/requests/${reqRecord.id}/deliver`,{method:'POST',body:{action:'mark_shared',recipientId:reqRecord.recipients[0].id},auth:true});
+  assert.equal(shared.status,200);
+  assert.equal(shared.body.request.recipients[0].status,'Sent');
+  assert.equal(shared.body.request.recipients[1].status,'Created');
+
+  const paid=await t.request(`/api/organizer/requests/${reqRecord.id}/recipients/${reqRecord.recipients[0].id}/status`,{method:'POST',body:{status:'Paid'},auth:true});
+  assert.equal(paid.status,200);
+  assert.equal(paid.body.request.recipients[0].status,'Paid');
+
+  const v1Migrated=normalizeState({version:1,lamp:'Leah',published:true,participants:{},events:[]});
+  assert.equal(v1Migrated.version,2);assert(Array.isArray(v1Migrated.contacts));assert(Array.isArray(v1Migrated.reimbursements));
 });
