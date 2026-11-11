@@ -5,7 +5,7 @@ import {mkdtemp, rm, readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createApp} from '../app.mjs';
-import {Store, defaultContacts, formatMoney, fxQuote, createExchangeRateLoader, newState, normalizeState} from '../store.mjs';
+import {Store, FX_RATES_USD, defaultContacts, formatMoney, fxQuote, createExchangeRateLoader, newState, normalizeState} from '../store.mjs';
 import {PayPal} from '../paypal.mjs';
 import {normalizeExtractedBill, normalizeParsedRequest} from '../nvidia.mjs';
 const organizerToken='organizer-test-key-abcdefghijklmnopqrstuvwxyz';
@@ -90,7 +90,7 @@ test('CSRF, host and static traversal protection',async()=>{
   const t=setup();assert.equal((await t.request('/api/organizer/session',{method:'POST',body:{token:organizerToken},headers:{origin:'https://evil.example'}})).status,403);
   assert.equal((await t.request('/api/health',{headers:{host:'evil.example'}})).status,400);
   assert.equal((await t.request('/%2e%2e%2f%2e%2e%2fserver/.env')).status,403);
-  const index=await t.request('/');assert.equal(index.status,200);assert.match(index.text,/<title>PayPal Hackathon/);
+  const index=await t.request('/');assert.equal(index.status,200);assert.match(index.text,/<title>AI/);
 });
 test('creation timeout retries the same durable request ID across restart',async()=>{
   const dir=await mkdtemp(join(tmpdir(),'splitsync-'));
@@ -362,4 +362,61 @@ test('requests preserve the full bill and record the organizer share separately'
   assert.equal(result.status, 200);
   assert.equal(result.body.request.ownShareCents, 100);
   assert.equal(result.body.request.recipients.reduce((sum, row) => sum + row.amountCents, 0), 99900);
+});
+
+test('bidirectional receive-side FX demo-pay and electricity requests preserve reviewed quote and kind', async () => {
+  const t = setup();
+  const revQuote = fxQuote(300000, 'USD', 'JPY', FX_RATES_USD, 'receive');
+  assert.equal(revQuote.enteredSide, 'receive');
+  assert.equal(revQuote.targetAmountCents, 300000);
+  assert.equal(revQuote.targetCurrency, 'JPY');
+
+  const payRes = await t.request('/api/organizer/demo-pay', {
+    method: 'POST', auth: true,
+    body: {
+      contactId: 'yuki',
+      enteredSide: 'receive',
+      sourceCurrency: 'USD',
+      targetCurrency: 'JPY',
+      targetAmountCents: 300000,
+      sourceAmountCents: revQuote.sourceAmountCents,
+      reviewedRate: revQuote.rate,
+      note: 'Tokyo dinner',
+      clientTxId: 'tx-yuki-receive-1',
+    },
+  });
+  assert.equal(payRes.status, 200);
+  assert.equal(payRes.body.transaction.enteredSide, 'receive');
+  assert.equal(payRes.body.transaction.targetAmountCents, 300000);
+  assert.equal(payRes.body.transaction.sourceAmountCents, revQuote.sourceAmountCents);
+
+  const elecRes = await t.request('/api/organizer/requests', {
+    method: 'POST', auth: true,
+    body: {
+      title: 'Electricity bill',
+      merchant: 'ConEd Electric',
+      kind: 'electricity',
+      currency: 'USD',
+      totalCents: 9600,
+      dueDate: '2026-12-15',
+      channel: 'demo',
+      demoAutoSettle: true,
+      recipients: [
+        {name: 'Maya', contactId: 'maya', amountCents: 4800, currency: 'USD', reason: 'Electricity'},
+        {name: 'Arun', contactId: 'arun', amountCents: 4800, currency: 'USD', reason: 'Electricity'},
+      ],
+    },
+  });
+  assert.equal(elecRes.status, 200);
+  assert.equal(elecRes.body.request.kind, 'electricity');
+  assert.equal(elecRes.body.request.dueDate, '2026-12-15');
+});
+
+test('localOrganizerAutoLogin health flag reflects server config without bypassing auth checks', async () => {
+  const auto = setup({localOrganizerAutoLogin: true});
+  const health = await auto.request('/api/health');
+  assert.equal(health.status, 200);
+  assert.equal(health.body.localOrganizerAutoLogin, true);
+  // Organizer endpoints still reject cross-origin or non-loopback requests without bearer/cookie
+  assert.equal((await auto.request('/api/organizer/state', {remoteAddress: '203.0.113.1'})).status, 401);
 });

@@ -12,28 +12,28 @@ Household organizers and roommates splitting shared move-in or home purchases (d
 
 ## Product Purpose
 
-PayPal Hackathon guides a household organizer from scanning a merchant purchase QR through AI-assisted or manual bill allocation, voice readback, private payment-link sharing, and verified PayPal Sandbox settlement tracking without exposing organizer credentials or other participants' payment links.
+**SplitSync AI** is an action-first payment, cross-border demo transfer, shared bill, and store application across Flutter and responsive web, pairing PhonePe-style payment utility and Medfarm design precision with AI bill/voice drafting, honest demo simulation boundaries, and server-verified PayPal Sandbox checkout for Demo Merchant (`SS-001`).
 
 ## Positioning
 
-Connected purchase-splitting workflow backed by a single-process Node Sandbox ledger: DeepSeek proposes item ownership within validated totals, Chatterbox reads the reviewed split aloud, the organizer confirms before publishing, and PayPal Sandbox handles buyer approval and server-verified capture per private share token.
+Connected workspace backed by a single-process Node Sandbox ledger: bidirectional reference FX (`Demo rate`), multimodal bill scanning and voice drafting via NVIDIA NIM + Chatterbox TTS, blank `Electricity` & `Rent` household split builders, staggered `Demo mode` settlement notifications, an 11-product household `Store` with quantity controls and honest retail scoping, and strict per-share `PayPal Sandbox` checkout isolation for `Demo Merchant`.
 
 ## Operating Context
 
-- Local connected Sandbox server (`http://localhost:3000`) serving `website/dist/` and `/api/*` endpoints, paired with the Flutter companion app (`flutter_app/`) targeting mobile and web.
-- Evaluated across portrait phones, short landscape phones (with active camera/bill side-by-side layout and rotation draft preservation), and desktop web browsers.
+- Local connected Sandbox server (`http://localhost:3000`) serving `website/dist/` and `/api/*` endpoints, paired with the Flutter companion app (`flutter_app/`) targeting Android, iOS, desktop, and web.
+- Evaluated across narrow portrait (`320x568` / `390x844`), short landscape (`667x375`), and desktop (`1280x860` / `1440x900`) viewports with parent-aware Back navigation and reduced-motion support.
 
 ## Capabilities and Constraints
 
-- Fixed `$150.00 USD` demo purchase (`Move-in essentials` at `Demo Merchant · SS-001`): `$120.00` shared kitchen essentials split equally (`$40.00` each) plus `$30.00` personal lamp assigned to one participant (e.g., Leah `$70.00`, Maya `$40.00`, Arun `$40.00`).
+- Fixed `$150.00 USD` demo purchase (`Move-in essentials` at `Demo Merchant · SS-001`): `$120.00` shared kitchen essentials split equally (`$40.00` each) plus `$30.00` personal lamp assigned to one participant.
 - Secrets (`PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `NVIDIA_API_KEY`, `ORGANIZER_TOKEN`) remain server-side in `server/.env`.
 - Shares become `Paid` only after server-verified PayPal capture or verified webhook event.
-- `Rent` and `Shop` are clearly labeled preview workflows; no real money moves anywhere (`Sandbox demo`).
+- Contact transfers, staggered settlement timers, `Electricity`, `Rent`, and sample Store fixtures are clearly labeled `Demo mode` / `Demo rate` / `Demo price`; no real money moves.
 
 ## Brand Commitments
 
-- Name: **PayPal Hackathon** (`Shared purchases, settled.`)
-- Visual system reference: translated from **Medfarm** (`#0F67FE` Electric Blue, `#242E49` Deep Navy, `#48B3A9` Teal, `#FA4D5E` Coral accent, `#F2F5F9` / `#EDF5FF` cool slate surfaces, `Plus Jakarta Sans` typography, bordered square back button, `4px` focus-halo inputs, step-progress header) while retaining PayPal Hackathon's own identity and content.
+- Name: **SplitSync AI**
+- Visual system reference: translated from **Medfarm** (`#1457D9` / `#0F67FE` Electric Blue, `#172846` / `#242E49` Deep Navy, `#48B3A9` Teal, `#F1F5FC` cool canvas, `Plus Jakarta Sans` typography, `48dp`/`44px` bordered Back button, `4px` focus-halo inputs) while keeping SplitSync AI's own identity.
 
 ## Evidence on Hand
 

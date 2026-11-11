@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <title>PayPal Hackathon · Shared payments & split hub</title>
+  <title>AI · Shared payments, bills &amp; store</title>
   <link rel="icon" type="image/png" href="assets/paypal.png">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <nav class="nav-rail" id="nav-rail" aria-label="App navigation">
-    <a class="rail-brand" href="#home" aria-label="PayPal Hackathon Home">
+    <a class="rail-brand" href="#home" aria-label="AI Home">
       <span class="brand-mark" aria-hidden="true">
-        <img src="assets/paypal.png" alt="">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17L17 7"/><path d="M8 7h9v9"/></svg>
       </span>
     </a>
     <div class="rail-links">
@@ -30,9 +30,9 @@
         </span>
         <span>Store</span>
       </a>
-      <a href="#profile" data-tab="profile">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/></svg>
-        <span>Profile</span>
+      <a href="#contact-paypal" data-tab="contact-paypal">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 13v-2a8 8 0 0 1 16 0v2"/><rect x="2" y="13" width="4" height="6" rx="1.5"/><rect x="18" y="13" width="4" height="6" rx="1.5"/><path d="M18 19a4 4 0 0 1-4 4h-2"/></svg>
+        <span>Contact</span>
       </a>
     </div>
   </nav>
@@ -40,6 +40,11 @@
   <div class="app-shell">
     <main id="app" class="app-main"></main>
   </div>
+
+  <button id="fab-ask-ai" class="fab-ask-ai" type="button" onclick="openAskSplitSync()" aria-label="Ask AI" hidden>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9z"/></svg>
+    <span>Ask AI</span>
+  </button>
 
   <nav class="bottom-nav" id="bottom-nav" aria-label="Bottom navigation">
     <a href="#home" data-tab="home">
@@ -57,9 +62,9 @@
       </span>
       <span>Store</span>
     </a>
-    <a href="#profile" data-tab="profile">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/></svg>
-      <span>Profile</span>
+    <a href="#contact-paypal" data-tab="contact-paypal">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 13v-2a8 8 0 0 1 16 0v2"/><rect x="2" y="13" width="4" height="6" rx="1.5"/><rect x="18" y="13" width="4" height="6" rx="1.5"/><path d="M18 19a4 4 0 0 1-4 4h-2"/></svg>
+      <span>Contact</span>
     </a>
   </nav>
 

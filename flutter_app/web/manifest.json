@@ -1,11 +1,11 @@
 {
-    "name": "PayPal Hackathon",
-    "short_name": "PayPal Hackathon",
+    "name": "SplitSync AI",
+    "short_name": "SplitSync AI",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "Hackathon payment and shared expense demo.",
+    "background_color": "#F1F5FC",
+    "theme_color": "#1457D9",
+    "description": "Shared payments, household bills, and split shopping.",
     "prefer_related_applications": false,
     "icons": [
         {

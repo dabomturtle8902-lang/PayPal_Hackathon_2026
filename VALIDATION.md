@@ -1,20 +1,20 @@
 # Verification
 
-## PayPal Hackathon walkthrough
+## SplitSync AI Payment & Storefront Redesign
 
-- The Node tests exercise simulated settlement, request deduplication, and the separation between the demo reset and merchant orders. The website route tests cover the clean start, contact transfers, requests, and cart.
-- Chrome exercised portrait, short landscape, and desktop widths. In an isolated connected fixture, browser audio advanced automatically after typed and microphone-transcript turns. Allen’s demo transfer showed USD 20 and GBP 15.80, and a request advanced to received. The supported SS-001 link opened merchant review.
-- Flutter widget tests use fixture data and injected speech/playback hooks. Native device camera and microphone, live Chatterbox synthesis, PayPal provider approval and capture, and external request delivery need a configured environment to verify.
+- **Backend (`server/`)**: `npm test` runs `node --test test/*.test.mjs` with 25 mocked tests covering organizer auth, `localOrganizerAutoLogin` defaults & loopback-restricted `.env` auto-connect (`server/index.mjs`), participant token isolation, amount/reference validation, durable request IDs across restarts, PayPal Orders v2 create/capture retry & timeout reconciliation, webhook signature postback checks, CSRF/host/traversal protection, AI split/TTS/STT fallbacks, FX snapshot caching & bidirectional precision, blank electricity/rent rule opt-in, staggered demo settlements, and reset behavior.
+- **Website (`website/dist/` & `website/test/demo.cjs`)**: `node website/test/demo.cjs` exercises clean-start Home (`Ask AI` entry), Medfarm Light/Dark (`System` / `Light` / `Dark`) CSS tokens, AI Store buy parsing (`"Buy 2 desk lamps"`), direct Store checkout (`Complete purchase`) -> Store receipt `'Split cash'` handoff into Ask SplitSync, Profile Receive Money QR generation & `#receive/...` scanner prefill, bidirectional FX (Allen GBP & Yuki JPY), Ask SplitSync editable review, blank Electricity creation, staggered demo notifications, 11-product Store, Developer Tools Sponsored toggle isolation, Cart/Checkout review, Back stack navigation, PayPal Sandbox scoping to `SS-001` / PayPal-eligible Store items, and presenter session reset.
+- **Live Browser & Connected Flow**: Verified against `http://localhost:3000` (Website + Node Sandbox API) and `http://localhost:5173` (Flutter web preview) in Chrome with automatic `.env` organizer connection (`Demo mode · Sandbox ready`), Medfarm Light & Dark (`#090E1D`) themes, Receive Money QR rendering, AI Store buy -> direct receipt -> `Split cash`, and zero console errors; `npx impeccable detect` reported 0 errors (4 font warnings noting required `'Plus Jakarta Sans'`).
+- **Flutter (`flutter_app/`)**:
+  - `flutter analyze` and `flutter test --no-pub` verify 13 widget and unit tests (bidirectional JPY FX, editable review, blank Electricity form creation, staggered settlement banner deduplication via `nowProvider` and mocked `splitsync/notifications` channel, 11-product Store, Developer Tools Sponsored toggle, Qty stepper, direct Store checkout, Back stack / tab-to-Home return, responsive overflow checks across `320x568`, `667x375`, and `1280x860`, plus Home `Ask AI` store buy, direct Checkout -> receipt `Split cash`, Profile Receive Money QR scan prefill, Medfarm Dark mode `#090E1D` theme switching, and `.env` `localOrganizerAutoLogin`).
+  - `flutter build apk --release` built `flutter_app/build/app/outputs/flutter-apk/app-release.apk` (`72.3 MB`) including Android `MainActivity.kt` notification channel (`POST_NOTIFICATIONS`) and bundled product assets.
 
-## PayPal Sandbox backend
+## Scope & Provider Limits
 
-- Thirteen Node backend tests pass with mocked PayPal responses. Coverage includes organizer sessions, participant isolation, amount/reference checks, persisted creation request IDs across restart, create/capture retries, capture-timeout reconciliation, pending/completed webhook updates, signature verification requests, CSRF/host/traversal checks, and refreshing orders without a return URL.
-- Twenty-two static website route regression checks pass.
-- Flutter dependency resolution succeeded and `flutter analyze` reported no issues. A release Flutter web build succeeded in a temporary generated web wrapper. Native Android/iOS builds and native device camera access have not been tested.
-- Browser walkthrough verified organizer login, initial $0 paid ledger, confirmed split publication, private participant links, $70 Maya breakdown, and missing-credentials error handling. The compiled Flutter web app connected to the same backend and displayed the $0 paid / $150 remaining ledger. No real credentials were supplied or accessed.
-- No actual PayPal Sandbox order, approval, capture or delivered webhook has been tested against the provider. Complete that test locally with your Sandbox credentials and approve the payment yourself on PayPal's screen.
-- The backend uses a local JSON ledger and one process. It has not been deployed; a static Sites deployment cannot run this Node server.
+- Node backend tests and Flutter widget tests use mocked PayPal responses, fixture FX rates, and injected speech/playback/clock/channel hooks where native hardware or network credentials are absent.
+- Live PayPal Sandbox order approval/capture, webhook delivery, and native physical-device testing (hardware camera QR/receipt capture, microphone dictation, runtime Android OS notification drawer display) remain outside automated CI checks until run with live credentials and on a target phone.
+- The backend stores allocations in a single-process local JSON ledger (`server/data/sandbox-ledger.json`) intended for Sandbox development; static Sites hosting cannot run the Node server.
 
 ## Earlier visual design
 
-The original five screenshots show static website routes at desktop, portrait and landscape widths. Their payment statuses and receipt are sample data. The new backend starts with everyone Awaiting payment and relies on provider capture status. AI allocation, rent and shop remain demos.
+The original five screenshots under `previews/` depict earlier static website routes; the current app and connected backend preserve strict separation between simulated `Demo mode` personal requests/transfers and PayPal Sandbox merchant checkout (`SS-001` and eligible Store items).

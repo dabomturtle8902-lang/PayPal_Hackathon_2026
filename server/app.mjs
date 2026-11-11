@@ -299,12 +299,28 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
             if (!recipientName || (batch && !contact)) fail(400, 'Choose a recipient before paying.');
             const sourceCurrency = normalizeCurrency(input?.sourceCurrency, 'USD');
             const targetCurrency = normalizeCurrency(input?.targetCurrency || contact?.currency || sourceCurrency, sourceCurrency);
-            const sourceAmountCents = Number(input?.sourceAmountCents);
-            if (!Number.isInteger(sourceAmountCents) || sourceAmountCents <= 0 || sourceAmountCents > 100000000 || (sourceCurrency === 'JPY' && sourceAmountCents % 100 !== 0)) {
+            const enteredSide = input?.enteredSide === 'receive' ? 'receive' : 'send';
+            const enteredCents = Number(enteredSide === 'receive' ? input?.targetAmountCents : input?.sourceAmountCents);
+            const checkedCurr = enteredSide === 'receive' ? targetCurrency : sourceCurrency;
+            if (!Number.isInteger(enteredCents) || enteredCents <= 0 || enteredCents > 100000000 || (checkedCurr === 'JPY' && enteredCents % 100 !== 0)) {
               fail(400, 'Enter a valid positive amount.');
             }
+            const computed = fxQuote(enteredCents, sourceCurrency, targetCurrency, rates, enteredSide);
+            const counterVal = Number(enteredSide === 'receive' ? input?.sourceAmountCents : input?.targetAmountCents);
+            const expectedCounter = enteredSide === 'receive' ? computed.sourceAmountCents : computed.targetAmountCents;
+            const tolerance = Math.max(200, Math.round(expectedCounter * 0.05));
+            const lockedCounter = Number.isInteger(counterVal) && counterVal > 0 && Math.abs(counterVal - expectedCounter) <= tolerance
+              ? ((enteredSide === 'receive' ? sourceCurrency : targetCurrency) === 'JPY' && counterVal % 100 !== 0 ? expectedCounter : counterVal)
+              : expectedCounter;
+            const quote = {
+              ...computed,
+              sourceAmountCents: enteredSide === 'receive' ? lockedCounter : computed.sourceAmountCents,
+              targetAmountCents: enteredSide === 'receive' ? computed.targetAmountCents : lockedCounter,
+              rate: typeof input?.reviewedRate === 'number' && Number.isFinite(input.reviewedRate) && input.reviewedRate > 0 ? input.reviewedRate : computed.rate,
+            };
             const note = typeof input?.note === 'string' && input.note.trim() ? input.note.trim().slice(0, 140) : 'Payment';
-            return {clientTxId, contact, recipientName, note, quote: fxQuote(sourceAmountCents, sourceCurrency, targetCurrency, rates)};
+            const type = input?.type === 'store-demo' ? 'store-demo' : 'demo-send';
+            return {clientTxId, contact, recipientName, note, type, rateDate: typeof input?.reviewedRateDate === 'string' ? input.reviewedRateDate.slice(0, 20) : date, quote};
           });
           const ids = payments.map(p => p.clientTxId);
           if (batch && (ids.includes('') || new Set(ids).size !== ids.length)) {
@@ -313,13 +329,15 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
           return await store.exclusive(async () => {
             const previous = store.state.demoTransactions || [];
             const created = [];
-            const transactions = payments.map(({clientTxId, contact, recipientName, note, quote}) => {
+            const transactions = payments.map(({clientTxId, contact, recipientName, note, type, rateDate: lockedDate, quote}) => {
               const existing = clientTxId && previous.find(tx => tx.clientTxId === clientTxId);
               if (existing) return existing;
               const tx = {
                 id: 'DTX-' + secret().slice(0, 6).toUpperCase(),
                 clientTxId: clientTxId || randomUUID(),
-                type: 'demo-send',
+                type,
+                direction: 'outgoing',
+                enteredSide: quote.enteredSide,
                 recipientName,
                 contactId: contact?.id || null,
                 country: contact?.country || '',
@@ -330,7 +348,8 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
                 targetCurrency: quote.targetCurrency,
                 inrEquivalentCents: quote.inrEquivalentCents,
                 rate: quote.rate,
-                rateDate: date,
+                rateDate: lockedDate || date,
+                rateLabel: 'Demo rate',
                 note,
                 status: 'Completed',
                 demo: true,
@@ -500,7 +519,7 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
               clientRequestId: clientRequestId || randomUUID(),
               createdAt: new Date().toISOString(),
               mode: demoAutoSettle ? 'demo-request' : 'reimbursement',
-              kind: ['receipt', 'request', 'rent', 'store'].includes(input?.kind) ? input.kind : 'request',
+              kind: ['receipt', 'request', 'rent', 'electricity', 'store'].includes(input?.kind) ? input.kind : 'request',
               demo: demoAutoSettle,
               dueDate: typeof input?.dueDate === 'string' ? input.dueDate.trim().slice(0, 40) : '',
               title: typeof input?.title === 'string' && input.title.trim() ? input.title.trim().slice(0, 100) : (String(input?.merchant || '').trim() || 'Money request'),

@@ -79,16 +79,32 @@ export function convertAmountCents(amountCents, fromCurrency = 'USD', toCurrency
   return to === 'JPY' ? Math.round(targetMajor) * 100 : Math.round(targetMajor * 100);
 }
 
-export function fxQuote(amountCents, fromCurrency = 'USD', toCurrency = 'USD', rates = FX_RATES_USD) {
+export function fxQuote(amountCents, fromCurrency = 'USD', toCurrency = 'USD', rates = FX_RATES_USD, enteredSide = 'send') {
   const sourceCurrency = normalizeCurrency(fromCurrency, 'USD');
   const targetCurrency = normalizeCurrency(toCurrency, sourceCurrency);
-  const sourceAmountCents = sourceCurrency === 'JPY'
-    ? Math.round((Number(amountCents) || 0) / 100) * 100
-    : Math.max(0, Math.round(Number(amountCents) || 0));
+  const norm = (val, curr) => curr === 'JPY'
+    ? Math.max(0, Math.round((Number(val) || 0) / 100) * 100)
+    : Math.max(0, Math.round(Number(val) || 0));
+  const rate = rates[targetCurrency] / rates[sourceCurrency];
+  if (enteredSide === 'receive') {
+    const targetAmountCents = norm(amountCents, targetCurrency);
+    const sourceAmountCents = convertAmountCents(targetAmountCents, targetCurrency, sourceCurrency, rates);
+    const inrEquivalentCents = convertAmountCents(sourceAmountCents, sourceCurrency, 'INR', rates);
+    return {
+      enteredSide: 'receive',
+      sourceAmountCents,
+      sourceCurrency,
+      targetAmountCents,
+      targetCurrency,
+      inrEquivalentCents,
+      rate,
+    };
+  }
+  const sourceAmountCents = norm(amountCents, sourceCurrency);
   const targetAmountCents = convertAmountCents(sourceAmountCents, sourceCurrency, targetCurrency, rates);
   const inrEquivalentCents = convertAmountCents(sourceAmountCents, sourceCurrency, 'INR', rates);
-  const rate = rates[targetCurrency] / rates[sourceCurrency];
   return {
+    enteredSide: 'send',
     sourceAmountCents,
     sourceCurrency,
     targetAmountCents,

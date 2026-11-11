@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -19,6 +20,8 @@ import 'models/splitsync_models.dart';
 import 'speech_recorder_stub.dart'
     if (dart.library.js_interop) 'speech_recorder_web.dart';
 import 'theme/medfarm_theme.dart';
+import 'widgets/medfarm_login_screen.dart';
+import 'widgets/wallet_and_cycle.dart';
 
 const payerOrigin = String.fromEnvironment(
   'PAYER_ORIGIN',
@@ -27,11 +30,16 @@ const payerOrigin = String.fromEnvironment(
 
 void main() => runApp(const SplitSync());
 
-class SplitSync extends StatelessWidget {
+class SplitSync extends StatefulWidget {
   final http.Client? httpClient;
   final bool enableLiveCamera;
   final Future<void> Function(Uint8List wavBytes)? onPlayAudio;
   final Future<String?> Function()? onDictateSpeech;
+  final DateTime Function()? nowProvider;
+  final ThemeMode initialThemeMode;
+  final bool initialUnlocked;
+  final bool autoPromptPhoneAuth;
+  final Future<bool> Function()? authenticateOverride;
 
   const SplitSync({
     super.key,
@@ -39,20 +47,38 @@ class SplitSync extends StatelessWidget {
     this.enableLiveCamera = true,
     this.onPlayAudio,
     this.onDictateSpeech,
+    this.nowProvider,
+    this.initialThemeMode = ThemeMode.system,
+    this.initialUnlocked = false,
+    this.autoPromptPhoneAuth = true,
+    this.authenticateOverride,
   });
 
   @override
+  State<SplitSync> createState() => _SplitSyncState();
+}
+
+class _SplitSyncState extends State<SplitSync> {
+  late ThemeMode _themeMode = widget.initialThemeMode;
+
+  @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'PayPal Hackathon',
+    title: 'AI',
     debugShowCheckedModeBanner: false,
     theme: buildSplitSyncTheme(brightness: Brightness.light),
     darkTheme: buildSplitSyncTheme(brightness: Brightness.dark),
-    themeMode: ThemeMode.light,
+    themeMode: _themeMode,
     home: Demo(
-      httpClient: httpClient,
-      enableLiveCamera: enableLiveCamera,
-      onPlayAudio: onPlayAudio,
-      onDictateSpeech: onDictateSpeech,
+      httpClient: widget.httpClient,
+      enableLiveCamera: widget.enableLiveCamera,
+      onPlayAudio: widget.onPlayAudio,
+      onDictateSpeech: widget.onDictateSpeech,
+      nowProvider: widget.nowProvider,
+      themeMode: _themeMode,
+      onThemeModeChanged: (mode) => setState(() => _themeMode = mode),
+      initialUnlocked: widget.initialUnlocked,
+      autoPromptPhoneAuth: widget.autoPromptPhoneAuth,
+      authenticateOverride: widget.authenticateOverride,
     ),
   );
 }
@@ -62,6 +88,12 @@ class Demo extends StatefulWidget {
   final bool enableLiveCamera;
   final Future<void> Function(Uint8List wavBytes)? onPlayAudio;
   final Future<String?> Function()? onDictateSpeech;
+  final DateTime Function()? nowProvider;
+  final ThemeMode themeMode;
+  final ValueChanged<ThemeMode>? onThemeModeChanged;
+  final bool initialUnlocked;
+  final bool autoPromptPhoneAuth;
+  final Future<bool> Function()? authenticateOverride;
 
   const Demo({
     super.key,
@@ -69,6 +101,12 @@ class Demo extends StatefulWidget {
     this.enableLiveCamera = true,
     this.onPlayAudio,
     this.onDictateSpeech,
+    this.nowProvider,
+    this.themeMode = ThemeMode.system,
+    this.onThemeModeChanged,
+    this.initialUnlocked = false,
+    this.autoPromptPhoneAuth = true,
+    this.authenticateOverride,
   });
 
   @override
@@ -103,6 +141,37 @@ class _DemoState extends State<Demo> {
   String fxRateDate = '2026-11-10';
   DateTime? fxRefreshAttempt;
   static const localDemoKey = 'paypal-hackathon-demo-v1';
+  static const _notifChannel = MethodChannel('splitsync/notifications');
+  final ValueNotifier<int> _uiTick = ValueNotifier<int>(0);
+  final List<({String token, String name})> _pushedStack = [];
+  int activeTab = 0;
+  bool _sponsoredEnabled = false;
+  bool _checkoutBusy = false;
+  int _productDetailQty = 1;
+  String _transferEnteredSide = 'send';
+  bool _transferStartedWithContact = false;
+  String? _inAppBanner;
+  Timer? _bannerTimer;
+  final Set<String> _notifiedSettlementIds = <String>{};
+  final Set<String> _justSettledReqIds = <String>{};
+  final ScrollController _homeScroll = ScrollController();
+  final ScrollController _activityScroll = ScrollController();
+  final ScrollController _storeScroll = ScrollController();
+  final ScrollController _contactScroll = ScrollController();
+  final ScrollController _profileScroll = ScrollController();
+  final _elecProviderController = TextEditingController();
+  final receiveAmountController = TextEditingController();
+  String receiveQrCurrency = 'USD';
+  StoreBuyMatch? _pendingStoreBuy;
+  int walletBalanceCents = 24500;
+  int activeWalletCardIndex = 0;
+  String paymentSource = 'wallet';
+  String cycleRange = '30D';
+  late bool _unlocked = widget.initialUnlocked;
+  final TextEditingController helpInput = TextEditingController();
+  final List<({bool user, String text})> helpMessages = [];
+  bool helpBusy = false;
+
   final amountController = TextEditingController();
   final noteController = TextEditingController();
   final contactSearch = TextEditingController();
@@ -112,6 +181,7 @@ class _DemoState extends State<Demo> {
   List<Map<String, dynamic>> localRequests = [];
   Map<String, dynamic>? activeTransfer;
   Map<String, dynamic>? savedRentRule;
+  Map<String, dynamic>? savedElecRule;
   Timer? demoTimer;
   bool pollingDemo = false;
   bool loadingLocalDemo = true;
@@ -128,15 +198,24 @@ class _DemoState extends State<Demo> {
   bool rememberRent = false;
   final rentContacts = <String>{};
 
+  @override
+  void setState(VoidCallback fn) {
+    if (!mounted) return;
+    super.setState(fn);
+    _uiTick.value++;
+  }
+
   String demoId() => List.generate(
     4,
     (_) => _random.nextInt(1 << 24).toRadixString(16).padLeft(6, '0'),
   ).join();
   static final _random = Random.secure();
 
+  DateTime _now() => widget.nowProvider?.call() ?? DateTime.now();
+
   String dateLabel(DateTime date) => date.toIso8601String().split('T').first;
   String currencyAmount(int cents, String currency) =>
-      '${(cents / 100).toStringAsFixed(currency == 'JPY' ? 0 : 2)} $currency';
+      formatCurrencyWithCode(cents, currency);
 
   int inputCents(String text, String currency) {
     final pattern = currency == 'JPY'
@@ -147,10 +226,36 @@ class _DemoState extends State<Demo> {
     return value <= 100000000 ? value : 0;
   }
 
-  int convertCents(int cents, String from, String to) {
-    final converted = cents * (fxRates[to] ?? 1) / (fxRates[from] ?? 1);
-    return to == 'JPY' ? (converted / 100).round() * 100 : converted.round();
+  int convertCents(int cents, String from, String to) =>
+      convertFxCents(cents, from, to, fxRates);
+
+  FxQuote activeTransferQuote() {
+    final raw = inputCents(
+      amountController.text,
+      _transferEnteredSide == 'receive' ? receiveCurrency : paymentCurrency,
+    );
+    return computeFxQuote(
+      raw,
+      paymentCurrency,
+      receiveCurrency,
+      fxRates,
+      enteredSide: _transferEnteredSide,
+    );
   }
+
+  Widget _brandMarkTile({double size = 40}) => Container(
+    width: size,
+    height: size,
+    decoration: BoxDecoration(
+      color: SplitColors.primary,
+      borderRadius: BorderRadius.circular(11),
+    ),
+    child: Icon(
+      Icons.north_east_rounded,
+      color: Colors.white,
+      size: size * 0.52,
+    ),
+  );
 
   Widget paypalIcon({double size = 36}) => ClipRRect(
     borderRadius: BorderRadius.circular(9),
@@ -179,10 +284,26 @@ class _DemoState extends State<Demo> {
           state['transfers'] as List,
         );
         savedRentRule = state['rent'] as Map<String, dynamic>?;
+        savedElecRule = state['elec'] as Map<String, dynamic>?;
+        final wb = state['walletBalanceCents'];
+        if (wb is int && wb >= 0) walletBalanceCents = wb;
+        final wc = state['activeWalletCardIndex'];
+        if (wc is int && wc >= 0) activeWalletCardIndex = wc;
+        final notified = state['notifiedIds'] as List?;
+        if (notified != null) {
+          _notifiedSettlementIds.addAll(notified.map((e) => e.toString()));
+        }
         setState(() {
           reimbursements = localRequests
               .map(ReimbursementRequest.fromJson)
               .toList();
+          for (final req in reimbursements) {
+            for (final r in req.recipients) {
+              if (r.status == 'Paid' || r.status == 'Payment received') {
+                _notifiedSettlementIds.add(r.id);
+              }
+            }
+          }
         });
       }
     } catch (_) {
@@ -201,13 +322,57 @@ class _DemoState extends State<Demo> {
           'requests': localRequests,
           'transfers': demoTransfers,
           'rent': savedRentRule,
+          'elec': savedElecRule,
+          'walletBalanceCents': walletBalanceCents,
+          'activeWalletCardIndex': activeWalletCardIndex,
+          'notifiedIds': _notifiedSettlementIds.toList(),
         }),
       );
     } catch (_) {
-      if (mounted) {
-        showFeedback('This browser could not save the local practice session.');
+      // Demo remains usable in memory on devices with storage disabled.
+    }
+  }
+
+  Future<void> _dispatchSettlementNotification(
+    ReimbursementRecipient rec,
+    ReimbursementRequest req,
+  ) async {
+    final amt = currencyAmount(rec.amountCents, rec.currency);
+    final msg = 'Payment received from ${rec.name} · $amt';
+    var osSent = false;
+    if (!kIsWeb) {
+      try {
+        final permitted =
+            await _notifChannel
+                .invokeMethod<bool>('isPermitted')
+                .timeout(const Duration(milliseconds: 500), onTimeout: () => false) ??
+            false;
+        if (permitted) {
+          osSent =
+              await _notifChannel
+                  .invokeMethod<bool>('notify', {
+                    'id': rec.id.hashCode & 0x7fffffff,
+                    'title': 'AI · Payment received',
+                    'body': '$msg (${req.title})',
+                  })
+                  .timeout(const Duration(milliseconds: 500), onTimeout: () => false) ??
+              false;
+        }
+      } catch (_) {
+        osSent = false;
       }
     }
+    if (mounted && !osSent) {
+      _showInAppBanner('$msg (${req.title})');
+    }
+  }
+
+  void _showInAppBanner(String message) {
+    _bannerTimer?.cancel();
+    setState(() => _inAppBanner = message);
+    _bannerTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted) setState(() => _inAppBanner = null);
+    });
   }
 
   Future<void> reconcileDemo() async {
@@ -220,7 +385,7 @@ class _DemoState extends State<Demo> {
           r.id: r.name,
     };
     if (pending.isEmpty) return;
-    final received = <String>[];
+    final settledPairs = <({ReimbursementRecipient rec, ReimbursementRequest req})>[];
     pollingDemo = true;
     try {
       if (connected) {
@@ -240,26 +405,43 @@ class _DemoState extends State<Demo> {
               ),
             )
             .toList();
-        for (final r
-            in fresh.where((r) => r.demo).expand((r) => r.recipients)) {
-          if (pending.containsKey(r.id) && r.status == 'Paid') {
-            received.add(r.name);
-          }
-        }
-        if (received.isNotEmpty) setState(() => reimbursements = fresh);
-      } else {
-        final now = DateTime.now().millisecondsSinceEpoch;
-        for (final req in localRequests.where((r) => r['demo'] == true)) {
-          for (final r in req['recipients'] as List) {
-            if (r['status'] == 'Waiting for payment' &&
-                (r['settleAt'] as int) <= now) {
-              r['status'] = 'Payment received';
-              r['receiptRef'] = 'DEMO-${r['id']}';
-              received.add(r['name'] as String);
+        for (final req in fresh.where((r) => r.demo)) {
+          for (final r in req.recipients) {
+            if (pending.containsKey(r.id) &&
+                (r.status == 'Paid' || r.status == 'Payment received') &&
+                !_notifiedSettlementIds.contains(r.id)) {
+              _notifiedSettlementIds.add(r.id);
+              _justSettledReqIds.add(req.id);
+              settledPairs.add((rec: r, req: req));
             }
           }
         }
-        if (received.isNotEmpty) {
+        if (settledPairs.isNotEmpty) setState(() => reimbursements = fresh);
+      } else {
+        final now = _now().millisecondsSinceEpoch;
+        var changed = false;
+        for (final req in localRequests.where((r) => r['demo'] == true)) {
+          for (final r in req['recipients'] as List) {
+            final recId = r['id']?.toString() ?? '';
+            if (r['status'] == 'Waiting for payment' &&
+                (r['settleAt'] as int) <= now) {
+              r['status'] = 'Payment received';
+              r['demoSettled'] = true;
+              r['settledAt'] ??= _now().toIso8601String();
+              r['receiptRef'] ??= 'DEMO-${r['id']}';
+              changed = true;
+              if (!_notifiedSettlementIds.contains(recId)) {
+                _notifiedSettlementIds.add(recId);
+                _justSettledReqIds.add(req['id']?.toString() ?? '');
+                settledPairs.add((
+                  rec: ReimbursementRecipient.fromJson(Map<String, dynamic>.from(r as Map)),
+                  req: ReimbursementRequest.fromJson(Map<String, dynamic>.from(req)),
+                ));
+              }
+            }
+          }
+        }
+        if (changed) {
           setState(
             () => reimbursements = localRequests
                 .map(ReimbursementRequest.fromJson)
@@ -268,8 +450,10 @@ class _DemoState extends State<Demo> {
           await saveLocalDemo();
         }
       }
-      if (mounted && received.isNotEmpty) {
-        showFeedback('Payment received from ${received.join(', ')} · Practice');
+      if (mounted && settledPairs.isNotEmpty) {
+        for (final item in settledPairs) {
+          await _dispatchSettlementNotification(item.rec, item.req);
+        }
       }
     } catch (_) {
       // Keep pending requests visible and retry on the next poll.
@@ -283,6 +467,8 @@ class _DemoState extends State<Demo> {
     amountController.clear();
     noteController.clear();
     paymentContact = contact;
+    _transferStartedWithContact = contact != null;
+    _transferEnteredSide = 'send';
     paymentCurrency = send ? 'USD' : contact?.currency ?? 'USD';
     receiveCurrency = contact?.currency ?? 'USD';
     transferAttemptId = null;
@@ -290,14 +476,65 @@ class _DemoState extends State<Demo> {
     go(send ? 'send-money' : 'manual-request');
   }
 
+  void _setTransferEnteredSide(String side) {
+    final prevQ = activeTransferQuote();
+    setState(() {
+      _transferEnteredSide = side;
+      final activeCents =
+          side == 'receive' ? prevQ.targetAmountCents : prevQ.sourceAmountCents;
+      final activeCurr =
+          side == 'receive' ? receiveCurrency : paymentCurrency;
+      if (activeCents > 0) {
+        amountController.text = formatMajorInput(activeCents, activeCurr);
+      }
+    });
+  }
+
+  Widget _fxSideToggle(SplitContact contact) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 8),
+    child: SizedBox(
+      width: double.infinity,
+      child: SegmentedButton<String>(
+        showSelectedIcon: false,
+        style: const ButtonStyle(
+          visualDensity: VisualDensity.compact,
+          padding: WidgetStatePropertyAll(
+            EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+          ),
+        ),
+        segments: [
+          ButtonSegment<String>(
+            value: 'send',
+            label: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text('You send ($paymentCurrency)', maxLines: 1),
+            ),
+          ),
+          ButtonSegment<String>(
+            value: 'receive',
+            label: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                '${contact.name} receives ($receiveCurrency)',
+                maxLines: 1,
+              ),
+            ),
+          ),
+        ],
+        selected: {_transferEnteredSide},
+        onSelectionChanged: (sel) => _setTransferEnteredSide(sel.first),
+      ),
+    ),
+  );
+
   Widget currencyPicker(
     String label,
     String selected,
     ValueChanged<String> change,
-  ) => DropdownButtonFormField<String>(
-    initialValue: selected,
-    isExpanded: true,
-    decoration: InputDecoration(labelText: label.isEmpty ? null : label),
+  ) => SplitDropdownField<String>(
+    key: ValueKey('curr-$label-$selected'),
+    label: label.isEmpty ? 'Currency' : label,
+    value: selected,
     items: fxRates.keys
         .map((c) => DropdownMenuItem(value: c, child: Text(c)))
         .toList(),
@@ -308,23 +545,35 @@ class _DemoState extends State<Demo> {
 
   Widget contactPaymentScreen({required bool send}) {
     final contact = paymentContact;
-    final amount = inputCents(amountController.text, paymentCurrency);
-    final title = send ? 'Send money' : 'Request money';
+    final title = send ? 'Send Money' : 'Request Money';
+    final quote = activeTransferQuote();
+    final activeCurr =
+        send && _transferEnteredSide == 'receive'
+            ? receiveCurrency
+            : paymentCurrency;
+    final activeAmt =
+        send ? quote.sourceAmountCents : inputCents(amountController.text, paymentCurrency);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SplitScreenHeader(
           title: title,
-          onBack: contact == null
-              ? () => go('home')
-              : () => setState(() => paymentContact = null),
+          subtitle: send
+              ? 'Demo transfer with live reference conversion'
+              : 'Request payment from any contact',
+          onBack: contact != null && !_transferStartedWithContact
+              ? () => setState(() => paymentContact = null)
+              : goBack,
+          trailing: const SplitBadge('Demo mode', preview: true),
         ),
         if (contact == null) ...[
           SplitTextField(
             label: 'Search contacts',
             controller: contactSearch,
+            prefixIcon: Icons.search_rounded,
             onChanged: (_) => setState(() {}),
           ),
+          const SizedBox(height: 12),
           for (final c in contacts.where(
             (c) =>
                 c.id != 'leah' &&
@@ -334,13 +583,15 @@ class _DemoState extends State<Demo> {
           ))
             paymentTile(
               name: c.name,
-              leading: Text(c.flag, style: const TextStyle(fontSize: 26)),
-              detail: [
-                c.country,
-                c.currency,
-              ].where((value) => value.isNotEmpty).join(' · '),
+              leading: SplitContactAvatar(
+                name: c.name,
+                id: c.id,
+                currency: c.currency,
+              ),
+              detail: c.currency,
               onTap: () => setState(() {
                 paymentContact = c;
+                _transferEnteredSide = 'send';
                 paymentCurrency = send ? 'USD' : c.currency;
                 receiveCurrency = c.currency;
               }),
@@ -350,21 +601,60 @@ class _DemoState extends State<Demo> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  '${contact.flag} ${contact.name} · ${contact.country}',
-                  style: Theme.of(context).textTheme.titleLarge,
+                Row(
+                  children: [
+                    SplitContactAvatar(
+                      name: contact.name,
+                      id: contact.id,
+                      currency: contact.currency,
+                      size: 46,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            contact.name,
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          Text(
+                            contact.currency,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 12),
+                if (send) _fxSideToggle(contact),
+                const SizedBox(height: 8),
                 SplitTextField(
-                  label: 'Amount',
+                  label: send
+                      ? (_transferEnteredSide == 'receive'
+                            ? '${contact.name} receives ($activeCurr)'
+                            : 'You send ($activeCurr)')
+                      : 'Request amount ($paymentCurrency)',
+                  hintText: activeCurr == 'JPY' ? '0' : '0.00',
+                  keyboardType: TextInputType.numberWithOptions(
+                    decimal: activeCurr != 'JPY',
+                  ),
                   controller: amountController,
                   onChanged: (_) => setState(() {}),
                 ),
-                currencyPicker(
-                  'Currency',
-                  paymentCurrency,
-                  (c) => setState(() => paymentCurrency = c),
-                ),
+                const SizedBox(height: 10),
+                if (send && _transferEnteredSide == 'receive')
+                  currencyPicker(
+                    'Recipient currency',
+                    receiveCurrency,
+                    (c) => setState(() => receiveCurrency = c),
+                  )
+                else
+                  currencyPicker(
+                    send ? 'Your currency' : 'Currency',
+                    paymentCurrency,
+                    (c) => setState(() => paymentCurrency = c),
+                  ),
                 const SizedBox(height: 10),
                 SplitTextField(
                   label: 'Note (optional)',
@@ -372,17 +662,27 @@ class _DemoState extends State<Demo> {
                 ),
                 if (send) ...[
                   const SizedBox(height: 10),
-                  currencyPicker(
-                    'Recipient currency',
-                    receiveCurrency,
-                    (c) => setState(() => receiveCurrency = c),
-                  ),
-                  if (amount > 0) transferQuote(contact, amount),
+                  if (_transferEnteredSide == 'receive')
+                    currencyPicker(
+                      'Your currency',
+                      paymentCurrency,
+                      (c) => setState(() => paymentCurrency = c),
+                    )
+                  else
+                    currencyPicker(
+                      'Recipient currency',
+                      receiveCurrency,
+                      (c) => setState(() => receiveCurrency = c),
+                    ),
+                  if (quote.sourceAmountCents > 0) ...[
+                    const SizedBox(height: 10),
+                    transferQuote(contact, quote),
+                  ],
                 ],
                 const SizedBox(height: 14),
                 SplitPrimaryButton(
                   label: send ? 'Review payment' : 'Review request',
-                  onPressed: amount <= 0 || loadingLocalDemo
+                  onPressed: activeAmt <= 0 || loadingLocalDemo
                       ? null
                       : () {
                           if (send) {
@@ -398,7 +698,7 @@ class _DemoState extends State<Demo> {
                                   name: contact.name,
                                   contactId: contact.id,
                                   known: true,
-                                  amountCents: amount,
+                                  amountCents: activeAmt,
                                   currency: paymentCurrency,
                                   reason: noteController.text.trim().isEmpty
                                       ? 'Money request'
@@ -417,60 +717,274 @@ class _DemoState extends State<Demo> {
     );
   }
 
-  Widget transferQuote(SplitContact contact, int amount) => Column(
-    children: [
-      lineRow('You send', currencyAmount(amount, paymentCurrency)),
-      lineRow(
-        '${contact.name} receives',
-        currencyAmount(
-          convertCents(amount, paymentCurrency, receiveCurrency),
-          receiveCurrency,
+  Widget transferQuote(SplitContact contact, FxQuote q) {
+    final isDark = SplitColors.isDark(context);
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: SplitColors.tint(context),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isDark ? SplitColors.darkFrameBorder : const Color(0xFFD6E4FE),
         ),
       ),
-      lineRow(
-        'ECB reference · $fxRateDate',
-        '1 $paymentCurrency ≈ ${(fxRates[receiveCurrency]! / fxRates[paymentCurrency]!).toStringAsPrecision(6)} $receiveCurrency',
+      child: Column(
+        children: [
+          lineRow('You send', currencyAmount(q.sourceAmountCents, q.sourceCurrency)),
+          lineRow(
+            '${contact.name} receives',
+            currencyAmount(q.targetAmountCents, q.targetCurrency),
+            bold: true,
+          ),
+          lineRow(
+            'Demo rate ($fxRateDate)',
+            '1 ${q.sourceCurrency} ≈ ${q.rate.toStringAsFixed(q.targetCurrency == 'JPY' ? 2 : 5)} ${q.targetCurrency}',
+          ),
+          if (q.sourceCurrency != 'INR')
+            lineRow('INR estimate', currencyAmount(q.inrEquivalentCents, 'INR')),
+        ],
       ),
-      if (paymentCurrency != 'INR')
-        lineRow(
-          'INR display estimate',
-          currencyAmount(convertCents(amount, paymentCurrency, 'INR'), 'INR'),
+    );
+  }
+
+  Future<void> _rechargeWallet(int cents) async {
+    if (cents <= 0) return;
+    final id = 'rch-${demoId()}';
+    final tx = <String, dynamic>{
+      'id': 'RCH-${id.substring(4, 10).toUpperCase()}',
+      'clientTxId': id,
+      'type': 'wallet-recharge',
+      'direction': 'incoming',
+      'recipientName': 'PayPal Wallet',
+      'sourceAmountCents': cents,
+      'sourceCurrency': 'USD',
+      'targetAmountCents': cents,
+      'targetCurrency': 'USD',
+      'fundingSource': 'Linked Card •••• 9104',
+      'note': 'Wallet recharge',
+      'status': 'Completed',
+      'demo': true,
+      'createdAt': _now().toIso8601String(),
+    };
+    setState(() {
+      walletBalanceCents += cents;
+      demoTransfers = [tx, ...demoTransfers];
+    });
+    await saveLocalDemo();
+    if (mounted) {
+      showFeedback('Added ${currencyAmount(cents, 'USD')} to PayPal Wallet.');
+    }
+  }
+
+  Future<void> openRechargeWalletSheet() async {
+    final customCtrl = TextEditingController(text: '50.00');
+    try {
+      final selectedCents = await showModalBottomSheet<int>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: SplitColors.card(context),
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
         ),
-    ],
+        builder: (sheetCtx) => StatefulBuilder(
+          builder: (sheetCtx, setSheetState) {
+            final parsedCents = inputCents(customCtrl.text, 'USD');
+            return Padding(
+              padding: EdgeInsets.fromLTRB(
+                20,
+                16,
+                20,
+                20 + MediaQuery.viewInsetsOf(sheetCtx).bottom,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Recharge PayPal Wallet',
+                          style: Theme.of(sheetCtx).textTheme.titleLarge,
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.of(sheetCtx).pop(),
+                        icon: const Icon(Icons.close_rounded),
+                      ),
+                    ],
+                  ),
+                  Text(
+                    'Current balance: ${currencyAmount(walletBalanceCents, 'USD')}',
+                    style: Theme.of(sheetCtx).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final amt in const [2500, 5000, 10000, 25000])
+                        ChoiceChip(
+                          label: Text('+\$${amt ~/ 100}'),
+                          selected: parsedCents == amt,
+                          onSelected: (_) => setSheetState(
+                            () => customCtrl.text = (amt / 100).toStringAsFixed(2),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  SplitTextField(
+                    label: 'Top-up amount (USD)',
+                    controller: customCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    onChanged: (_) => setSheetState(() {}),
+                  ),
+                  const SizedBox(height: 14),
+                  SplitPrimaryButton(
+                    label: parsedCents > 0
+                        ? 'Add from Linked Card'
+                        : 'Enter amount',
+                    onPressed: parsedCents > 0
+                        ? () => Navigator.of(sheetCtx).pop(parsedCents)
+                        : null,
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      );
+      if (selectedCents != null && selectedCents > 0) {
+        await _rechargeWallet(selectedCents);
+      }
+    } finally {
+      customCtrl.dispose();
+    }
+  }
+
+  bool _canFundPayment(int requiredUsdCents) =>
+      paymentSource != 'wallet' || walletBalanceCents >= requiredUsdCents;
+
+  void _deductWalletIfSelected(int requiredUsdCents) {
+    if (paymentSource == 'wallet' && requiredUsdCents > 0) {
+      walletBalanceCents = max(0, walletBalanceCents - requiredUsdCents);
+    }
+  }
+
+  Widget _paymentSourceBlock(int requiredUsdCents) => PaymentSourceSelector(
+    selectedSource: paymentSource,
+    walletBalanceCents: walletBalanceCents,
+    requiredUsdCents: requiredUsdCents,
+    onChanged: (source) => setState(() => paymentSource = source),
+    onRecharge: openRechargeWalletSheet,
   );
 
   Widget transferReviewScreen() {
     final contact = paymentContact;
     if (contact == null) return contactPaymentScreen(send: true);
-    final amount = inputCents(amountController.text, paymentCurrency);
+    final q = activeTransferQuote();
+    final activeCurr =
+        _transferEnteredSide == 'receive' ? receiveCurrency : paymentCurrency;
+    final requiredUsdCents = convertCents(q.sourceAmountCents, q.sourceCurrency, 'USD');
+    final canPay = _canFundPayment(requiredUsdCents);
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SplitScreenHeader(
           title: 'Review payment',
-          subtitle: 'Verify the recipient and amount before you pay',
+          subtitle: 'Verify or edit details before you pay',
           onBack: () {
-            if (!sending) go(transferFromAsk ? 'talk' : 'send-money');
+            if (!sending) goBack();
           },
+          trailing: const SplitBadge('Demo mode', preview: true),
         ),
         SplitCard(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SplitBadge('Practice mode', preview: true),
-              Text(
-                '${contact.flag} ${contact.name}',
-                style: Theme.of(context).textTheme.titleLarge,
+              const SplitCallout(
+                message:
+                    'Uses labeled Demo rate. You can edit the recipient, amount side, currency, or note here before paying.',
               ),
-              transferQuote(contact, amount),
-              if (noteController.text.trim().isNotEmpty)
-                lineRow('Note', noteController.text.trim()),
               const SizedBox(height: 12),
-              if (sending) const LinearProgressIndicator(),
-              SplitPrimaryButton(
-                label: sending ? 'Paying…' : 'Pay',
-                onPressed: sending || amount <= 0
+              DropdownButtonFormField<String>(
+                initialValue: contact.id,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Recipient'),
+                items: contacts
+                    .where((c) => c.id != 'leah')
+                    .map(
+                      (c) => DropdownMenuItem(
+                        value: c.id,
+                        child: Text('${c.name} (${c.currency})'),
+                      ),
+                    )
+                    .toList(),
+                onChanged: sending
                     ? null
-                    : () => submitTransfer(contact, amount),
+                    : (id) {
+                        final next = contacts.where((c) => c.id == id).firstOrNull;
+                        if (next != null) {
+                          setState(() {
+                            paymentContact = next;
+                            receiveCurrency = next.currency;
+                          });
+                        }
+                      },
+              ),
+              _fxSideToggle(contact),
+              twoButtons(
+                SplitTextField(
+                  label: _transferEnteredSide == 'receive'
+                      ? '${contact.name} receives ($activeCurr)'
+                      : 'Send amount ($activeCurr)',
+                  keyboardType: TextInputType.numberWithOptions(
+                    decimal: activeCurr != 'JPY',
+                  ),
+                  controller: amountController,
+                  onChanged: (_) => setState(() {}),
+                ),
+                currencyPicker(
+                  _transferEnteredSide == 'receive'
+                      ? 'Recipient currency'
+                      : 'Your currency',
+                  activeCurr,
+                  (c) => setState(() {
+                    if (_transferEnteredSide == 'receive') {
+                      receiveCurrency = c;
+                    } else {
+                      paymentCurrency = c;
+                    }
+                  }),
+                ),
+              ),
+              const SizedBox(height: 10),
+              SplitTextField(
+                label: 'Note',
+                controller: noteController,
+                onChanged: (_) => setState(() {}),
+              ),
+              const SizedBox(height: 12),
+              transferQuote(contact, q),
+              const SizedBox(height: 12),
+              _paymentSourceBlock(requiredUsdCents),
+              const SizedBox(height: 14),
+              if (sending) const LinearProgressIndicator(),
+              twoButtons(
+                SplitSecondaryButton(
+                  label: 'Back',
+                  onPressed: sending ? null : goBack,
+                ),
+                SplitPrimaryButton(
+                  label: sending ? 'Paying…' : 'Pay',
+                  onPressed: sending || q.sourceAmountCents <= 0 || !canPay
+                      ? null
+                      : () => submitTransfer(contact, q),
+                ),
+                crossAxisAlignment: CrossAxisAlignment.stretch,
               ),
             ],
           ),
@@ -479,16 +993,29 @@ class _DemoState extends State<Demo> {
     );
   }
 
-  Future<void> submitTransfer(SplitContact contact, int amount) async {
+  Future<void> submitTransfer(SplitContact contact, FxQuote q) async {
     if (sending) return;
+    final requiredUsdCents = convertCents(q.sourceAmountCents, q.sourceCurrency, 'USD');
+    if (!_canFundPayment(requiredUsdCents)) {
+      showFeedback('PayPal Wallet balance too low. Recharge or switch card.');
+      return;
+    }
     setState(() => sending = true);
+    final fundingLabel = paymentSource == 'wallet'
+        ? 'PayPal Wallet'
+        : 'PayPal Cashback •••• 9104';
     final id = transferAttemptId ??= demoId();
     final input = {
       'contactId': contact.id,
       'recipientName': contact.name,
-      'sourceAmountCents': amount,
-      'sourceCurrency': paymentCurrency,
-      'targetCurrency': receiveCurrency,
+      'enteredSide': q.enteredSide,
+      'sourceAmountCents': q.sourceAmountCents,
+      'sourceCurrency': q.sourceCurrency,
+      'targetAmountCents': q.targetAmountCents,
+      'targetCurrency': q.targetCurrency,
+      'reviewedRate': q.rate,
+      'reviewedRateDate': fxRateDate,
+      'fundingSource': fundingLabel,
       'note': noteController.text.trim(),
       'clientTxId': id,
     };
@@ -503,33 +1030,37 @@ class _DemoState extends State<Demo> {
             )
           : {
               ...input,
-              'id': id,
+              'id': 'DTX-${id.substring(0, 6).toUpperCase()}',
+              'direction': 'outgoing',
               'flag': contact.flag,
+              'country': contact.country,
+              'rate': q.rate,
+              'rateDate': fxRateDate,
+              'rateLabel': 'Demo rate',
+              'inrEquivalentCents': q.inrEquivalentCents,
               'status': 'Completed',
-              'targetAmountCents': convertCents(
-                amount,
-                paymentCurrency,
-                receiveCurrency,
-              ),
               'createdAt': DateTime.now().toIso8601String(),
             };
       if (!mounted) return;
       if (!MediaQuery.disableAnimationsOf(context)) {
-        await Future<void>.delayed(const Duration(milliseconds: 400));
+        await Future<void>.delayed(const Duration(milliseconds: 350));
       }
       if (!mounted) return;
       setState(() {
+        _deductWalletIfSelected(requiredUsdCents);
+        transaction['fundingSource'] ??= fundingLabel;
         demoTransfers = [
           transaction,
           ...demoTransfers.where((t) => t['id'] != transaction['id']),
         ];
         activeTransfer = transaction;
         if (transferFromAsk) clearPaymentDraft();
-        page = 'transfer-receipt';
       });
-      if (!connected) await saveLocalDemo();
+      await saveLocalDemo();
+      if (!mounted) return;
+      go('transfer-receipt', replace: true);
     } catch (e) {
-      if (mounted) showFeedback('Could not complete the practice payment. $e');
+      if (mounted) showFeedback('Could not complete the demo payment. $e');
     } finally {
       if (mounted) setState(() => sending = false);
     }
@@ -538,27 +1069,31 @@ class _DemoState extends State<Demo> {
   Widget groupPaymentScreen() {
     if (!validPaymentDraft) return talkScreen();
     final totals = <String, int>{};
+    var totalUsdCents = 0;
     for (final row in recipientDrafts) {
       totals.update(
         row.currency,
         (total) => total + row.amountCents,
         ifAbsent: () => row.amountCents,
       );
+      totalUsdCents += convertCents(row.amountCents, row.currency, 'USD');
     }
+    final canPay = _canFundPayment(totalUsdCents);
     return Column(
       children: [
         SplitScreenHeader(
           title: 'Review ${recipientDrafts.length} payments',
           subtitle: 'Check what each person will receive.',
           onBack: () {
-            if (!sending) go('talk');
+            if (!sending) goBack();
           },
+          trailing: const SplitBadge('Demo mode', preview: true),
         ),
         SplitCard(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SplitBadge('Practice mode', preview: true),
+              const SplitBadge('Demo mode', preview: true),
               const SizedBox(height: 16),
               for (final row in recipientDrafts) ...groupPaymentLine(row),
               const Divider(height: 24),
@@ -567,11 +1102,13 @@ class _DemoState extends State<Demo> {
                   'Total in ${entry.key}',
                   currencyAmount(entry.value, entry.key),
                 ),
+              const SizedBox(height: 12),
+              _paymentSourceBlock(totalUsdCents),
               const SizedBox(height: 16),
               if (sending) const LinearProgressIndicator(),
               SplitPrimaryButton(
-                label: sending ? 'Paying…' : 'Confirm practice payments',
-                onPressed: sending ? null : submitGroupPayments,
+                label: sending ? 'Paying…' : 'Confirm demo payments',
+                onPressed: sending || !canPay ? null : submitGroupPayments,
               ),
             ],
           ),
@@ -598,6 +1135,17 @@ class _DemoState extends State<Demo> {
 
   Future<void> submitGroupPayments() async {
     if (sending || !validPaymentDraft) return;
+    final totalUsdCents = recipientDrafts.fold<int>(
+      0,
+      (sum, row) => sum + convertCents(row.amountCents, row.currency, 'USD'),
+    );
+    if (!_canFundPayment(totalUsdCents)) {
+      showFeedback('PayPal Wallet balance too low. Recharge or switch card.');
+      return;
+    }
+    final fundingLabel = paymentSource == 'wallet'
+        ? 'PayPal Wallet'
+        : 'PayPal Cashback •••• 9104';
     final attemptId = groupAttemptId ??= demoId();
     final inputs = [
       for (final (index, row) in recipientDrafts.indexed)
@@ -606,6 +1154,7 @@ class _DemoState extends State<Demo> {
           'contactId': row.contactId!,
           'sourceAmountCents': row.amountCents,
           'sourceCurrency': row.currency,
+          'fundingSource': fundingLabel,
           'note': row.reason,
         },
     ];
@@ -644,6 +1193,10 @@ class _DemoState extends State<Demo> {
       if (!mounted) return;
       final ids = transactions.map((tx) => tx['id']).toSet();
       setState(() {
+        _deductWalletIfSelected(totalUsdCents);
+        for (final tx in transactions) {
+          tx['fundingSource'] ??= fundingLabel;
+        }
         demoTransfers = [
           ...transactions,
           ...demoTransfers.where((tx) => !ids.contains(tx['id'])),
@@ -652,14 +1205,15 @@ class _DemoState extends State<Demo> {
         clearPaymentDraft();
         askMessages.add((
           user: false,
-          text: '${transactions.length} practice payments completed.',
+          text: '${transactions.length} demo payments completed.',
         ));
-        page = 'payment-draft-receipt';
       });
-      if (!connected) await saveLocalDemo();
+      await saveLocalDemo();
+      if (!mounted) return;
+      go('payment-draft-receipt', replace: true);
     } catch (_) {
       if (mounted) {
-        showFeedback('Could not confirm the practice payments. Try again.');
+        showFeedback('Could not confirm the demo payments. Try again.');
       }
     } finally {
       if (mounted) setState(() => sending = false);
@@ -667,20 +1221,27 @@ class _DemoState extends State<Demo> {
   }
 
   Widget groupReceiptScreen() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       SplitScreenHeader(
-        title: '${groupReceipt.length} practice payments completed',
-        onBack: () => go('activity'),
+        title: '${groupReceipt.length} demo payments completed',
+        onBack: goBack,
+        trailing: const SplitBadge('Demo mode', preview: true),
       ),
       SplitCard(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const SplitBadge('Practice mode', preview: true),
+            const SplitBadge('Demo mode', preview: true),
             const SizedBox(height: 12),
             for (final tx in groupReceipt)
               paymentTile(
-                name: '${tx['flag'] ?? ''} ${tx['recipientName']}'.trim(),
+                name: tx['recipientName']?.toString() ?? 'Recipient',
+                leading: SplitContactAvatar(
+                  name: tx['recipientName']?.toString() ?? '?',
+                  id: tx['contactId']?.toString() ?? '',
+                  currency: tx['targetCurrency']?.toString() ?? 'USD',
+                ),
                 amount: currencyAmount(
                   tx['sourceAmountCents'] as int,
                   tx['sourceCurrency'] as String,
@@ -692,9 +1253,16 @@ class _DemoState extends State<Demo> {
                     : null,
               ),
             const SizedBox(height: 12),
-            SplitPrimaryButton(
-              label: 'View activity',
-              onPressed: () => go('activity'),
+            twoButtons(
+              SplitSecondaryButton(
+                label: 'Done',
+                onPressed: () => go('home'),
+              ),
+              SplitPrimaryButton(
+                label: 'View Activity',
+                onPressed: () => go('activity'),
+              ),
+              crossAxisAlignment: CrossAxisAlignment.stretch,
             ),
           ],
         ),
@@ -705,43 +1273,182 @@ class _DemoState extends State<Demo> {
   Widget transferReceiptScreen() {
     final t = activeTransfer;
     if (t == null) return activityScreen();
+    final isStore = t['type'] == 'store-demo';
+    final recName = t['recipientName']?.toString() ?? 'Recipient';
+    final contact = contacts
+        .where(
+          (c) =>
+              c.id == t['contactId'] ||
+              c.name.toLowerCase() == recName.toLowerCase(),
+        )
+        .firstOrNull;
+    final srcCurr = t['sourceCurrency']?.toString() ?? 'USD';
+    final tgtCurr = t['targetCurrency']?.toString() ?? srcCurr;
+    final srcCents = (t['sourceAmountCents'] as num?)?.toInt() ?? 0;
+    final tgtCents = (t['targetAmountCents'] as num?)?.toInt() ?? srcCents;
+    final rateNum = (t['rate'] as num?)?.toDouble();
+    final inrCents = (t['inrEquivalentCents'] as num?)?.toInt() ??
+        convertCents(srcCents, srcCurr, 'INR');
+    final enteredSide = t['enteredSide']?.toString() == 'receive'
+        ? 'Recipient amount ($tgtCurr)'
+        : 'Send amount ($srcCurr)';
+    final txId = t['id']?.toString() ?? 'DTX-DEMO';
+    final dateStr =
+        (t['createdAt']?.toString() ?? '').replaceAll('T', ' ');
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SplitScreenHeader(
-          title: 'Payment receipt',
-          onBack: () => go('activity'),
+          title: isStore ? 'Store demo receipt' : 'Payment receipt',
+          subtitle: 'Demo mode · $txId',
+          onBack: goBack,
+          trailing: const SplitStatusPill('Completed'),
         ),
         SplitCard(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SplitBadge('Practice mode', preview: true),
-              Text(
-                'Paid ${t['recipientName']}',
-                style: Theme.of(context).textTheme.headlineSmall,
+              Row(
+                children: [
+                  SplitContactAvatar(
+                    name: recName,
+                    id: contact?.id ?? '',
+                    currency: tgtCurr,
+                    size: 46,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          isStore
+                              ? 'Purchased ${currencyAmount(srcCents, srcCurr)}'
+                              : 'Sent ${currencyAmount(srcCents, srcCurr)}',
+                          style: Theme.of(context).textTheme.headlineSmall,
+                        ),
+                        Text(
+                          isStore
+                              ? recName
+                              : 'to $recName${contact?.country.isNotEmpty == true ? ' (${contact!.country})' : ''}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-              lineRow(
-                'You sent',
-                currencyAmount(
-                  t['sourceAmountCents'] as int,
-                  t['sourceCurrency'] as String,
+              Divider(height: 22, color: SplitColors.lineColor(context)),
+              lineRow('Direction', 'Outgoing · Sent'),
+              lineRow('Receipt reference', txId),
+              if (dateStr.length >= 16)
+                lineRow('Date', dateStr.substring(0, 16)),
+              lineRow('Entered side', enteredSide),
+              lineRow('You sent', currencyAmount(srcCents, srcCurr)),
+              if (srcCurr != tgtCurr) ...[
+                lineRow(
+                  '$recName receives',
+                  currencyAmount(tgtCents, tgtCurr),
+                  bold: true,
                 ),
-              ),
-              lineRow(
-                'Recipient received',
-                currencyAmount(
-                  t['targetAmountCents'] as int,
-                  t['targetCurrency'] as String,
-                ),
-              ),
+                if (rateNum != null)
+                  lineRow(
+                    'Demo rate (${t['rateDate'] ?? fxRateDate})',
+                    '1 $srcCurr ≈ ${rateNum.toStringAsFixed(tgtCurr == 'JPY' ? 2 : 5)} $tgtCurr',
+                  ),
+              ],
+              if (srcCurr != 'INR')
+                lineRow('INR estimate', currencyAmount(inrCents, 'INR')),
               if ((t['note'] as String?)?.isNotEmpty == true)
                 lineRow('Note', t['note'] as String),
-              lineRow('Date', (t['createdAt'] as String).split('T').first),
+              if ((t['fundingSource'] as String?)?.isNotEmpty == true)
+                lineRow('Funded with', t['fundingSource'] as String),
+              lineRow('Ledger', isStore ? 'Demo store purchase' : 'Demo transfer'),
+              const SizedBox(height: 14),
+              if (isStore) ...[
+                SplitPrimaryButton(
+                  label: 'Split cash',
+                  leadingIcon: Icons.call_split_rounded,
+                  onPressed: () => _splitStoreTransfer(t),
+                ),
+                const SizedBox(height: 10),
+                twoButtons(
+                  SplitSecondaryButton(
+                    label: 'Open Activity',
+                    onPressed: () => go('activity'),
+                  ),
+                  SplitSecondaryButton(
+                    label: 'Done',
+                    onPressed: () => go('home'),
+                  ),
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                ),
+              ] else
+                twoButtons(
+                  SplitSecondaryButton(
+                    label: 'Open Activity',
+                    onPressed: () => go('activity'),
+                  ),
+                  SplitPrimaryButton(
+                    label: 'Done',
+                    onPressed: () => go('home'),
+                  ),
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                ),
             ],
           ),
         ),
       ],
     );
+  }
+
+  void _splitStoreTransfer(Map<String, dynamic> tx) {
+    final totalCents = (tx['sourceAmountCents'] as num?)?.toInt() ?? 0;
+    if (totalCents <= 0) return;
+    final curr = fxRates.containsKey(tx['sourceCurrency'])
+        ? tx['sourceCurrency'] as String
+        : 'USD';
+    final note = (tx['note']?.toString().trim().isNotEmpty == true)
+        ? tx['note'].toString().trim()
+        : (tx['recipientName']?.toString() ?? 'Store order');
+    final peers = contacts.where((c) => c.id == 'maya' || c.id == 'arun').toList();
+    final splitCount = peers.length + 1;
+    final perShare = equalShare(totalCents, splitCount, curr);
+    final drafts = [
+      for (final p in peers)
+        RecipientDraft(
+          name: p.name,
+          contactId: p.id,
+          known: true,
+          amountCents: perShare,
+          currency: curr,
+          reason: note,
+        ),
+    ];
+    setState(() {
+      _pendingStoreBuy = null;
+      billRawPng = null;
+      billDraft = ExtractedBillDraft(
+        merchant: note,
+        date: dateLabel(_now()),
+        currency: curr,
+        items: [BillLineItem(name: note, amountCents: totalCents)],
+        totalCents: totalCents,
+      );
+      recipientDrafts = drafts;
+      requestKind = 'store';
+      requestAttemptId = null;
+      deliveryChannel = 'demo';
+      askSend = false;
+      sendReady = false;
+      receiptAttached = true;
+      askMessages.add((
+        user: false,
+        text:
+            'Ready to split $note (${currencyAmount(totalCents, curr)}) evenly with ${peers.map((e) => e.name).join(' and ')}. Review or adjust shares below.',
+      ));
+    });
+    go('talk');
   }
 
   int equalShare(int total, int count, String currency) {
@@ -804,7 +1511,7 @@ class _DemoState extends State<Demo> {
               'Review requests',
               style: Theme.of(sheet).textTheme.titleLarge,
             ),
-            const Text('Practice requests show simulated payment progress.'),
+            const Text('Demo requests simulate staggered incoming payments with notifications.'),
             for (final r in requestPayers)
               lineRow(
                 '${r.name} owes',
@@ -818,7 +1525,7 @@ class _DemoState extends State<Demo> {
               ),
             const SizedBox(height: 12),
             SplitPrimaryButton(
-              label: 'Create practice requests',
+              label: 'Create demo requests',
               onPressed: () => Navigator.pop(sheet, 'demo'),
             ),
             if (connected) ...[
@@ -933,9 +1640,19 @@ class _DemoState extends State<Demo> {
   @override
   void dispose() {
     demoTimer?.cancel();
+    _bannerTimer?.cancel();
     if (audioComplete != null) unawaited(audioComplete!.cancel());
     cancelBrowserRecording();
+    _uiTick.dispose();
+    _homeScroll.dispose();
+    _activityScroll.dispose();
+    _storeScroll.dispose();
+    _contactScroll.dispose();
+    _profileScroll.dispose();
+    _elecProviderController.dispose();
+    receiveAmountController.dispose();
     askInput.dispose();
+    helpInput.dispose();
     askScroll.dispose();
     if (speech.isListening) unawaited(speech.cancel());
     if (_audio != null) unawaited(_audio!.dispose());
@@ -1024,7 +1741,34 @@ class _DemoState extends State<Demo> {
     return published ? '$_origin/#share/${n.toLowerCase()}' : null;
   }
 
-  void go(String nextPage) {
+  void goBack() {
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).maybePop();
+    } else if (activeTab != 0) {
+      go('home');
+    }
+  }
+
+  Route<void> _buildSubRoute(String routeName, String token) {
+    final reduce = MediaQuery.disableAnimationsOf(context);
+    if (reduce) {
+      return PageRouteBuilder<void>(
+        settings: RouteSettings(name: routeName),
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
+        pageBuilder: (_, _, _) => _SubScreenScaffold(state: this),
+      );
+    }
+    return CupertinoPageRoute<void>(
+      settings: RouteSettings(name: routeName),
+      builder: (_) => _SubScreenScaffold(state: this),
+    );
+  }
+
+  void go(String nextPage, {bool replace = false}) {
+    if (nextPage != page) {
+      ScaffoldMessenger.maybeOf(context)?.clearSnackBars();
+    }
     if (nextPage == 'send-money' ||
         nextPage == 'talk' ||
         nextPage == 'review-transfer') {
@@ -1037,15 +1781,59 @@ class _DemoState extends State<Demo> {
       askBusy = false;
     }
     if (nextPage == 'review') merchantOpened = true;
-    setState(() {
-      page = nextPage;
-      if (nextPage != 'scan' && nextPage != 'scan-error') {
-        if (scannerState == _ScannerState.scanning ||
-            scannerState == _ScannerState.permission) {
-          scannerState = _ScannerState.ready;
-        }
+    if (nextPage != 'scan' && nextPage != 'scan-error') {
+      if (scannerState == _ScannerState.scanning ||
+          scannerState == _ScannerState.permission) {
+        scannerState = _ScannerState.ready;
       }
-    });
+    }
+
+    final normalized = nextPage == 'shop' ? 'store' : nextPage;
+    if (_tabPages.contains(normalized)) {
+      if (_pushedStack.isNotEmpty) {
+        Navigator.of(context).popUntil((r) => r.isFirst);
+      }
+      setState(() {
+        _pushedStack.clear();
+        activeTab = _tabPages.indexOf(normalized);
+        page = normalized;
+      });
+      return;
+    }
+
+    if (!replace && _pushedStack.isNotEmpty && _pushedStack.last.name == normalized) {
+      return;
+    }
+
+    final tok = demoId();
+    if (replace && _pushedStack.isNotEmpty) {
+      _pushedStack[_pushedStack.length - 1] = (token: tok, name: normalized);
+      setState(() => page = normalized);
+      Navigator.of(context).pushReplacement(_buildSubRoute(normalized, tok)).then((_) {
+        _onRoutePopped(tok);
+      });
+    } else {
+      _pushedStack.add((token: tok, name: normalized));
+      setState(() => page = normalized);
+      Navigator.of(context).push(_buildSubRoute(normalized, tok)).then((_) {
+        _onRoutePopped(tok);
+      });
+    }
+  }
+
+  void _onRoutePopped(String token) {
+    final idx = _pushedStack.indexWhere((e) => e.token == token);
+    if (idx < 0) return;
+    _pushedStack.removeRange(idx, _pushedStack.length);
+    if (!mounted) return;
+    final nextTop = _pushedStack.isNotEmpty ? _pushedStack.last.name : _tabPages[activeTab];
+    if (page == 'talk' && nextTop != 'talk') {
+      turnEpoch++;
+      stopVoice();
+      cancelAskMic();
+      askBusy = false;
+    }
+    setState(() => page = nextTop);
   }
 
   void showFeedback(String text) {
@@ -1123,16 +1911,15 @@ class _DemoState extends State<Demo> {
     fxRateDate = date;
   }
 
-  Future<void> restoreOrganizerConnection() async {
+  Future<void> restoreOrganizerConnection({bool interactive = false}) async {
     try {
       final health = await backend(
         '/api/health',
         timeout: const Duration(seconds: 4),
       );
-      if (!mounted ||
-          connected ||
-          backendBusy ||
-          health['localOrganizerAutoLogin'] != true) {
+      if (!mounted || connected || backendBusy) return;
+      if (health['localOrganizerAutoLogin'] != true) {
+        if (interactive) go('welcome');
         return;
       }
       await _loadFullState();
@@ -1142,7 +1929,13 @@ class _DemoState extends State<Demo> {
         merchantOpened = published;
         staticPreview = false;
       });
+      if (interactive) {
+        showFeedback('Connected using .env organizer session.');
+      }
     } catch (_) {
+      if (interactive && mounted) {
+        showFeedback('Server offline or .env auto-login disabled.');
+      }
       // The local preview stays available when the server is offline.
     }
   }
@@ -1168,8 +1961,8 @@ class _DemoState extends State<Demo> {
         connected = true;
         merchantOpened = published;
         staticPreview = false;
-        page = 'home';
       });
+      go('home');
     } on _ApiException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -1276,13 +2069,50 @@ class _DemoState extends State<Demo> {
       organizerKeyController.clear();
       connectErrorKind = _ConnectErrorKind.none;
       connectErrorMessage = '';
-      page = 'home';
       merchantOpened = false;
       reimbursements = [];
       demoTransfers = [];
       contacts = List.of(kDefaultContacts);
     });
+    go('home');
     unawaited(restoreLocalDemo());
+  }
+
+  Future<void> resetDemoSession() async {
+    setState(() {
+      backendBusy = true;
+      _justSettledReqIds.clear();
+      _notifiedSettlementIds.clear();
+      _inAppBanner = null;
+    });
+    try {
+      if (connected) {
+        await backend('/api/organizer/reset-demo', body: {});
+        await _loadFullState();
+      } else {
+        reimbursements = reimbursements.where((r) => !r.demo).toList();
+        localRequests = localRequests.where((r) => r['demo'] != true).toList();
+      }
+      demoTransfers = [];
+      localRequests.removeWhere((r) => r['demo'] == true);
+      savedRentRule = null;
+      savedElecRule = null;
+      walletBalanceCents = 24500;
+      activeWalletCardIndex = 0;
+      paymentSource = 'wallet';
+      helpMessages.clear();
+      helpInput.clear();
+      cart.clear();
+      clearPaymentDraft();
+      clearReceipt();
+      if (!connected) await saveLocalDemo();
+      showFeedback('Clean demo session ready.');
+      go('home');
+    } catch (e) {
+      showFeedback('Could not reset demo session: $e');
+    } finally {
+      if (mounted) setState(() => backendBusy = false);
+    }
   }
 
   static final Uint8List _fallbackPngBytes = base64Decode(
@@ -1303,8 +2133,8 @@ class _DemoState extends State<Demo> {
       billTotalController.text = (billDraft.totalCents / 100).toStringAsFixed(
         2,
       );
-      page = 'bill-crop';
     });
+    go('bill-crop');
     if (widget.enableLiveCamera) {
       unawaited(
         buildSampleReceiptPng().then((png) {
@@ -1325,8 +2155,8 @@ class _DemoState extends State<Demo> {
     setState(() {
       billExtractState = 'loading';
       billExtractError = '';
-      if (!inline) page = 'bill-review';
     });
+    if (!inline) go('bill-review');
     if (!connected || usingDemoReceipt) {
       setState(() {
         if (billDraft.merchant.isEmpty && billRawPng != null) {
@@ -1416,13 +2246,13 @@ class _DemoState extends State<Demo> {
     }
     setState(() => backendBusy = true);
     final evidence = billRawPng != null ? receiptDataUrl(billRawPng!) : '';
-    final now = DateTime.now();
+    final now = _now();
     final isDemo = deliveryChannel == 'demo';
     final draftId = requestAttemptId ??= demoId();
     final payload = {
       'clientRequestId': draftId,
       'kind': requestKind,
-      'dueDate': rentDue == null || requestKind != 'rent'
+      'dueDate': rentDue == null || (requestKind != 'rent' && requestKind != 'electricity')
           ? ''
           : dateLabel(rentDue!),
       'title': billDraft.merchant.isEmpty
@@ -1504,9 +2334,11 @@ class _DemoState extends State<Demo> {
         activeRequestId = rec.id;
         activeRequestQrRecId = rec.recipients.first.id;
         backendBusy = false;
-        requestAttemptId = null;
-        page = 'request-detail';
       });
+      go(
+        'request-detail',
+        replace: const ['electricity', 'rent', 'manual-request'].contains(page),
+      );
       return;
     }
 
@@ -1521,8 +2353,11 @@ class _DemoState extends State<Demo> {
         requestAttemptId = null;
         activeRequestId = rec.id;
         activeRequestQrRecId = rec.recipients.first.id;
-        page = 'request-detail';
       });
+      go(
+        'request-detail',
+        replace: const ['electricity', 'rent', 'manual-request'].contains(page),
+      );
       final outcomes = (res['deliveryOutcomes'] as List?) ?? [];
       if (outcomes.any((o) => (o as Map)['ok'] != true)) {
         showFeedback(
@@ -1562,12 +2397,11 @@ class _DemoState extends State<Demo> {
           lamp = owner;
           selected = owner;
           aiState = _AiState.idle;
-          page = 'split';
         } else {
           aiState = _AiState.clarify;
-          page = 'clarify';
         }
       });
+      go(owner != null ? 'split' : 'clarify');
       return;
     }
     if (!connected && _organizerKey.isEmpty) {
@@ -1577,8 +2411,8 @@ class _DemoState extends State<Demo> {
     setState(() {
       aiState = _AiState.loading;
       aiError = '';
-      page = 'split';
     });
+    go('split');
     try {
       final res = await backend(
         '/api/organizer/suggest-split',
@@ -1594,10 +2428,8 @@ class _DemoState extends State<Demo> {
           serverParticipants = [];
         });
       } else {
-        setState(() {
-          aiState = _AiState.clarify;
-          page = 'clarify';
-        });
+        setState(() => aiState = _AiState.clarify);
+        go('clarify', replace: page == 'split');
       }
     } on _ApiException catch (e) {
       if (!mounted) return;
@@ -1652,8 +2484,8 @@ class _DemoState extends State<Demo> {
       setState(() {
         published = true;
         selected = lamp;
-        page = 'requests';
       });
+      go('requests');
       return;
     }
     if (await syncLedger(publish: true)) {
@@ -1695,21 +2527,27 @@ class _DemoState extends State<Demo> {
     Widget second, {
     int firstFlex = 1,
     int secondFlex = 1,
+    double minSideBySideWidth = 280,
+    CrossAxisAlignment crossAxisAlignment = CrossAxisAlignment.start,
   }) => LayoutBuilder(
     builder: (context, constraints) {
-      if (constraints.maxWidth < 300) {
+      if (constraints.maxWidth < minSideBySideWidth) {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [first, const SizedBox(height: 10), second],
         );
       }
-      return Row(
+      final row = Row(
+        crossAxisAlignment: crossAxisAlignment,
         children: [
           Expanded(flex: firstFlex, child: first),
           const SizedBox(width: 12),
           Expanded(flex: secondFlex, child: second),
         ],
       );
+      return crossAxisAlignment == CrossAxisAlignment.stretch
+          ? IntrinsicHeight(child: row)
+          : row;
     },
   );
 
@@ -1728,7 +2566,9 @@ class _DemoState extends State<Demo> {
                 label,
                 style: TextStyle(
                   fontWeight: bold ? FontWeight.w800 : FontWeight.w600,
-                  color: bold ? SplitColors.navy : SplitColors.muted,
+                  color: bold
+                      ? SplitColors.ink(context)
+                      : SplitColors.mutedInk(context),
                 ),
               ),
             ),
@@ -1738,10 +2578,10 @@ class _DemoState extends State<Demo> {
               child: Text(
                 value,
                 textAlign: TextAlign.end,
-                style: const TextStyle(
+                style: TextStyle(
                   fontWeight: FontWeight.w800,
-                  color: SplitColors.navy,
-                  fontFeatures: [FontFeature.tabularFigures()],
+                  color: SplitColors.ink(context),
+                  fontFeatures: const [FontFeature.tabularFigures()],
                 ),
               ),
             ),
@@ -1752,11 +2592,18 @@ class _DemoState extends State<Demo> {
   );
 
   Widget participantAvatar(String n) {
+    final isDark = SplitColors.isDark(context);
     final (bg, fg) = switch (n) {
-      'Arun' => (SplitColors.tealBg, SplitColors.tealInk),
-      'Leah' => (const Color(0xFFEAEFF8), SplitColors.navy),
-      'Samir Patel' => (SplitColors.amberBg, SplitColors.amber),
-      _ => (SplitColors.surfaceTint, SplitColors.primaryInk),
+      'Arun' => isDark
+          ? (const Color(0xFF143536), const Color(0xFF7CE0D7))
+          : (SplitColors.tealBg, SplitColors.tealInk),
+      'Leah' => isDark
+          ? (SplitColors.darkSecondary, Colors.white)
+          : (const Color(0xFFEAEFF8), SplitColors.navy),
+      'Samir Patel' => isDark
+          ? (const Color(0xFF332612), const Color(0xFFF6C667))
+          : (SplitColors.amberBg, SplitColors.amber),
+      _ => (SplitColors.tint(context), SplitColors.linkInk(context)),
     };
     return CircleAvatar(
       radius: 18,
@@ -1784,18 +2631,18 @@ class _DemoState extends State<Demo> {
                 children: [
                   Text(
                     n,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontWeight: FontWeight.w800,
-                      color: SplitColors.navy,
+                      color: SplitColors.ink(context),
                     ),
                   ),
                   Text(
                     n == lamp
                         ? '\$40.00 shared + \$30.00 lamp'
                         : '\$40.00 shared essentials',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 14,
-                      color: SplitColors.muted,
+                      color: SplitColors.mutedInk(context),
                     ),
                   ),
                   if (stackPill) ...[
@@ -1811,10 +2658,10 @@ class _DemoState extends State<Demo> {
               children: [
                 Text(
                   money(share(n)),
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontWeight: FontWeight.w800,
-                    color: SplitColors.navy,
-                    fontFeatures: [FontFeature.tabularFigures()],
+                    color: SplitColors.ink(context),
+                    fontFeatures: const [FontFeature.tabularFigures()],
                   ),
                 ),
                 if (showStatus && !stackPill) ...[
@@ -1847,7 +2694,7 @@ class _DemoState extends State<Demo> {
               const SizedBox(width: 10),
               const Expanded(
                 child: Text(
-                  'PayPal Hackathon',
+                  'AI',
                   style: TextStyle(
                     color: Colors.white,
                     fontSize: 18,
@@ -1931,11 +2778,13 @@ class _DemoState extends State<Demo> {
           const SizedBox(height: 8),
           Center(
             child: TextButton(
-              onPressed: () => setState(() {
-                staticPreview = true;
-                connected = false;
-                page = 'home';
-              }),
+              onPressed: () {
+                setState(() {
+                  staticPreview = true;
+                  connected = false;
+                });
+                go('home');
+              },
               child: const Text(
                 'Explore static preview (no server)',
                 style: TextStyle(
@@ -1963,145 +2812,320 @@ class _DemoState extends State<Demo> {
     bool compact = false,
   }) {
     final theme = Theme.of(context);
-    final ink = primary ? Colors.white : SplitColors.navy;
+    final ink = primary ? Colors.white : SplitColors.ink(context);
     final radius = BorderRadius.circular(20);
     final iconBox = DecoratedBox(
       decoration: BoxDecoration(
-        color: primary ? const Color(0xFF235BDC) : SplitColors.surfaceTint,
-        borderRadius: BorderRadius.circular(14),
+        color: primary
+            ? Colors.white.withValues(alpha: 0.2)
+            : SplitColors.tint(context),
+        borderRadius: BorderRadius.circular(11),
       ),
       child: SizedBox.square(
-        dimension: primary ? 60 : 46,
+        dimension: 40,
         child: Icon(
           icon,
-          size: primary ? 34 : 24,
-          color: primary ? Colors.white : SplitColors.primaryInk,
+          size: 20,
+          color: primary ? Colors.white : SplitColors.linkInk(context),
         ),
       ),
-    );
-    final copy = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          label,
-          style:
-              (primary
-                      ? theme.textTheme.headlineSmall
-                      : theme.textTheme.titleMedium)
-                  ?.copyWith(color: ink),
-        ),
-        if (subtitle.isNotEmpty) ...[
-          const SizedBox(height: 3),
-          Text(
-            subtitle,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: primary ? const Color(0xFFDCE8FF) : SplitColors.muted,
-            ),
-          ),
-        ],
-      ],
     );
     return Semantics(
       button: true,
-      child: Material(
-        color: primary ? const Color(0xFF103693) : Colors.white,
-        shape: RoundedRectangleBorder(
+      label: label,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: primary
+              ? const LinearGradient(
+                  colors: [Color(0xFF103693), SplitColors.primary],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                )
+              : null,
+          color: primary ? null : SplitColors.card(context),
           borderRadius: radius,
-          side: BorderSide(
-            color: primary ? Colors.transparent : SplitColors.line,
-          ),
+          border: primary ? null : Border.all(color: SplitColors.lineColor(context)),
         ),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: onTap,
-          child: Padding(
-            padding: EdgeInsets.all(primary ? 20 : 16),
-            child: compact
-                ? Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [iconBox, const SizedBox(height: 10), copy],
-                  )
-                : Row(
-                    children: [
-                      iconBox,
-                      const SizedBox(width: 14),
-                      Expanded(child: copy),
-                      const SizedBox(width: 8),
-                      Icon(Icons.arrow_forward_rounded, color: ink),
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: radius,
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onTap,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 88),
+              child: Padding(
+                padding: const EdgeInsets.all(13),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    iconBox,
+                    const SizedBox(height: 10),
+                    Text(
+                      label,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        color: ink,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    if (subtitle.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: primary
+                              ? const Color(0xFFDCE8FF)
+                              : SplitColors.mutedInk(context),
+                        ),
+                      ),
                     ],
-                  ),
+                  ],
+                ),
+              ),
+            ),
           ),
         ),
       ),
     );
   }
 
+  ({int openCount, int paidCount, int totalCount, int remainingCents, String currency, ReimbursementRequest? latest})
+  _awaitingSummary() {
+    final active = reimbursements.where((r) => r.owedCents > 0).toList();
+    if (active.isEmpty) {
+      final settled = reimbursements.where((r) => r.demo).firstOrNull;
+      if (settled != null && _justSettledReqIds.contains(settled.id)) {
+        return (
+          openCount: 0,
+          paidCount: settled.recipients.length,
+          totalCount: settled.recipients.length,
+          remainingCents: 0,
+          currency: settled.currency,
+          latest: settled,
+        );
+      }
+      return (openCount: 0, paidCount: 0, totalCount: 0, remainingCents: 0, currency: 'USD', latest: null);
+    }
+    final first = active.first;
+    final paid = active.expand((r) => r.recipients).where((x) => x.status == 'Paid' || x.status == 'Payment received').length;
+    final total = active.expand((r) => r.recipients).length;
+    final remaining = active.where((r) => r.currency == first.currency).fold(0, (s, r) => s + r.owedCents);
+    return (openCount: active.length, paidCount: paid, totalCount: total, remainingCents: remaining, currency: first.currency, latest: first);
+  }
+
   Widget homeScreen() {
     final latest = activityRows().take(3).toList();
+    final awaiting = _awaitingSummary();
+    final storeSample = kStoreCatalog.take(4).toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            paypalIcon(size: 42),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                'PayPal Hackathon',
-                style: Theme.of(context).textTheme.titleMedium,
+        SizedBox(
+          width: double.infinity,
+          child: Wrap(
+            spacing: 12,
+            runSpacing: 10,
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Hello, Leah', style: Theme.of(context).textTheme.headlineMedium),
+                ],
               ),
-            ),
-            const SizedBox(width: 8),
-            const SplitBadge('Practice mode', preview: true),
-          ],
+              Tooltip(
+                message: 'Profile',
+                child: Semantics(
+                  button: true,
+                  label: 'Profile',
+                  child: InkWell(
+                    key: const Key('profile-avatar-btn'),
+                    onTap: () => go('profile'),
+                    customBorder: const CircleBorder(),
+                    child: Container(
+                      padding: const EdgeInsets.all(2),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: SplitColors.primary.withValues(alpha: 0.45),
+                          width: 2,
+                        ),
+                      ),
+                      child: CircleAvatar(
+                        radius: 21,
+                        backgroundColor: SplitColors.tint(context),
+                        child: Text(
+                          'L',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w800,
+                            fontSize: 16,
+                            color: SplitColors.linkInk(context),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
-        const SizedBox(height: 24),
-        Text('Hello, Leah', style: Theme.of(context).textTheme.headlineMedium),
-        const SizedBox(height: 6),
-        const Text('Pay a QR code, send money, or split a bill.'),
-        const SizedBox(height: 20),
-        homeAction(
-          label: 'Scan & pay',
-          subtitle: 'Scan a payment QR code',
-          icon: Icons.qr_code_scanner_rounded,
-          primary: true,
-          onTap: () {
-            linkController.clear();
-            go('scan');
-          },
-        ),
-        const SizedBox(height: 10),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: homeAction(
-                label: 'Send money',
+        const SizedBox(height: 14),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final fourCol = constraints.maxWidth >= 560;
+            final cols = fourCol ? 4 : 2;
+            const gap = 10.0;
+            final itemW = (constraints.maxWidth - (cols - 1) * gap) / cols;
+            final tiles = [
+              homeAction(
+                label: 'Scan & Pay',
+                icon: Icons.qr_code_scanner_rounded,
+                primary: true,
+                onTap: () {
+                  linkController.clear();
+                  go('scan');
+                },
+              ),
+              homeAction(
+                label: 'Send Money',
                 icon: Icons.north_east_rounded,
-                compact: true,
                 onTap: () => openContactPayment(send: true),
               ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: homeAction(
-                label: 'Request money',
+              homeAction(
+                label: 'Request Money',
                 icon: Icons.south_west_rounded,
-                compact: true,
                 onTap: () => openContactPayment(send: false),
               ),
+              homeAction(
+                label: 'Split a Bill',
+                icon: Icons.receipt_long_outlined,
+                onTap: () => go('talk'),
+              ),
+            ];
+            return Wrap(
+              spacing: gap,
+              runSpacing: gap,
+              children: tiles.map((t) => SizedBox(width: itemW, child: t)).toList(),
+            );
+          },
+        ),
+        const SizedBox(height: 14),
+        WalletCardDeck3D(
+          walletBalanceCents: walletBalanceCents,
+          activeCardIndex: activeWalletCardIndex,
+          onCardChanged: (idx) {
+            setState(() => activeWalletCardIndex = idx);
+            unawaited(saveLocalDemo());
+          },
+          onRecharge: openRechargeWalletSheet,
+        ),
+        Text(
+          'Quick contacts',
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
+        const SizedBox(height: 8),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              for (final contact in contacts.where((c) => c.id != 'leah').take(5))
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Material(
+                    color: SplitColors.card(context),
+                    shape: StadiumBorder(side: BorderSide(color: SplitColors.lineColor(context))),
+                    clipBehavior: Clip.antiAlias,
+                    child: InkWell(
+                      onTap: () => openContactPayment(send: true, contact: contact),
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(minHeight: 48),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              SplitContactAvatar(
+                                name: contact.name,
+                                id: contact.id,
+                                currency: contact.currency,
+                                size: 32,
+                              ),
+                              const SizedBox(width: 8),
+                              Text(contact.name, style: TextStyle(fontWeight: FontWeight.w800, color: SplitColors.ink(context), fontSize: 13)),
+                              const SizedBox(width: 4),
+                              Text(contact.currency, style: TextStyle(color: SplitColors.mutedInk(context), fontSize: 12, fontWeight: FontWeight.w700)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        if (awaiting.latest != null) ...[
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: awaiting.openCount == 0
+                  ? (SplitColors.isDark(context) ? const Color(0xFF103134) : SplitColors.tealBg)
+                  : (SplitColors.isDark(context) ? const Color(0xFF2B2214) : const Color(0xFFFFF8EA)),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: awaiting.openCount == 0
+                    ? (SplitColors.isDark(context) ? const Color(0xFF286E6A) : const Color(0xFFB4E5DF))
+                    : (SplitColors.isDark(context) ? const Color(0xFF7D5A1C) : const Color(0xFFF4DA9C)),
+              ),
             ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        homeAction(
-          label: 'Ask AI',
-          subtitle: 'Draft a payment in your own words',
-          icon: Icons.mic_none_rounded,
-          onTap: () => go('talk'),
-        ),
-        const SizedBox(height: 26),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        awaiting.openCount == 0 ? 'Requests settled' : 'Requests awaiting payment',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        awaiting.openCount == 0
+                            ? '${awaiting.latest!.title} · ${awaiting.paidCount}/${awaiting.totalCount} received'
+                            : '${currencyAmount(awaiting.remainingCents, awaiting.currency)} remaining across ${awaiting.openCount} request${awaiting.openCount == 1 ? '' : 's'}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                SizedBox(
+                  height: 48,
+                  child: TextButton.icon(
+                    onPressed: () {
+                      activeRequestId = awaiting.latest!.id;
+                      activeRequestQrRecId = awaiting.latest!.recipients.firstOrNull?.id;
+                      go('request-detail');
+                    },
+                    icon: const Icon(Icons.arrow_forward_rounded, size: 17),
+                    label: Text(awaiting.openCount == 0 ? 'View' : 'Track'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        const SizedBox(height: 12),
         SplitCard(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -2110,66 +3134,225 @@ class _DemoState extends State<Demo> {
                 children: [
                   Expanded(
                     child: Text(
-                      'Latest activity',
+                      'Recent transactions',
                       style: Theme.of(context).textTheme.titleLarge,
                     ),
                   ),
-                  TextButton(
-                    onPressed: () => go('activity'),
-                    child: const Text('See all'),
+                  SizedBox(
+                    height: 48,
+                    child: TextButton(
+                      onPressed: () => go('activity'),
+                      child: const Text('See all'),
+                    ),
                   ),
                 ],
               ),
-              if (latest.isEmpty) const Text('No activity yet.'),
+              if (latest.isEmpty)
+                const Text('No activity yet. Tap a contact above, Scan & Pay, or Request Money.'),
               for (final row in latest) activityTile(row),
             ],
           ),
         ),
         const SizedBox(height: 12),
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(
+        Text('Bills & household', style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 8),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final twoCol = constraints.maxWidth >= 520;
+            const gap = 10.0;
+            final itemW = twoCol ? (constraints.maxWidth - gap) / 2 : constraints.maxWidth;
+            final bills = [
+              _shortcutTile(Icons.bolt_rounded, 'Electricity', 'Blank bill split', () => openHouseholdBill('electricity')),
+              _shortcutTile(Icons.calendar_today_outlined, 'Rent', 'Monthly split', () => openHouseholdBill('rent')),
+              _shortcutTile(Icons.camera_alt_outlined, 'Scan a Bill', 'Receipt OCR', openReceiptCamera),
+              _shortcutTile(Icons.auto_awesome_outlined, 'Split a Bill', 'AI assistant', () => go('talk')),
+            ];
+            return Wrap(
+              spacing: gap,
+              runSpacing: gap,
+              children: bills.map((w) => SizedBox(width: itemW, child: w)).toList(),
+            );
+          },
+        ),
+        const SizedBox(height: 14),
+        SplitCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              for (final contact
-                  in contacts.where((c) => c.id != 'leah').take(5))
-                Padding(
-                  padding: const EdgeInsets.only(right: 6),
-                  child: ActionChip(
-                    label: Text(
-                      '${contact.flag} ${contact.name} · ${contact.currency}',
-                    ),
-                    onPressed: () =>
-                        openContactPayment(send: true, contact: contact),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text('Store', style: Theme.of(context).textTheme.titleLarge),
                   ),
+                  SizedBox(
+                    height: 44,
+                    child: TextButton(
+                      onPressed: () => go('store'),
+                      child: const Text('Browse Store'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              if (storeSample.length >= 4)
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final totalH = constraints.maxWidth >= 520 ? 250.0 : 216.0;
+                    Widget photoCard(
+                      StoreProduct p, {
+                      required Key cardKey,
+                      double pad = 10,
+                    }) {
+                      return Semantics(
+                        button: true,
+                        label: p.name,
+                        child: Tooltip(
+                          message: p.name,
+                          child: Material(
+                            color: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                              side: BorderSide(
+                                color: SplitColors.isDark(context)
+                                    ? SplitColors.darkFrameBorder
+                                    : SplitColors.line,
+                              ),
+                            ),
+                            clipBehavior: Clip.antiAlias,
+                            child: InkWell(
+                              key: cardKey,
+                              onTap: () {
+                                activeProduct = p;
+                                _productDetailQty = 1;
+                                go('product');
+                              },
+                              child: Padding(
+                                padding: EdgeInsets.all(pad),
+                                child: Center(
+                                  child: Image.asset(
+                                    p.imageAsset,
+                                    fit: BoxFit.contain,
+                                    errorBuilder: (_, _, _) => Icon(
+                                      p.icon,
+                                      size: 28,
+                                      color: SplitColors.primaryInk,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    }
+
+                    return SizedBox(
+                      height: totalH,
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Expanded(
+                            flex: 11,
+                            child: photoCard(
+                              storeSample[0],
+                              cardKey: const Key('home-store-card-0'),
+                              pad: 14,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            flex: 10,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                Expanded(
+                                  flex: 11,
+                                  child: photoCard(
+                                    storeSample[1],
+                                    cardKey: const Key('home-store-card-1'),
+                                    pad: 10,
+                                  ),
+                                ),
+                                const SizedBox(height: 10),
+                                Expanded(
+                                  flex: 9,
+                                  child: Row(
+                                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                                    children: [
+                                      Expanded(
+                                        child: photoCard(
+                                          storeSample[2],
+                                          cardKey: const Key('home-store-card-2'),
+                                          pad: 6,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: photoCard(
+                                          storeSample[3],
+                                          cardKey: const Key('home-store-card-3'),
+                                          pad: 6,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
             ],
           ),
         ),
-        const SizedBox(height: 12),
-        Text('Household', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 8),
-        _shortcutTile(
-          Icons.calendar_today_outlined,
-          'Rent',
-          'Create rent request',
-          () {
-            resetRent();
-            go('rent');
-          },
-        ),
-        const SizedBox(height: 8),
-        _shortcutTile(
-          Icons.people_outline,
-          'Split expense',
-          'Create a shared request',
-          () => go('talk'),
-        ),
-        const SizedBox(height: 8),
-        _shortcutTile(
-          Icons.receipt_long_outlined,
-          'Scan bill',
-          'Capture a receipt',
-          openReceiptCamera,
+        SplitCard(
+          key: const Key('home-receive-qr-card'),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Receive Money QR',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+              ),
+              const SizedBox(height: 14),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: SplitColors.lineColor(context)),
+                ),
+                child: QrImageView(
+                  data: '$_origin/#receive/leah?currency=USD',
+                  size: 216,
+                  backgroundColor: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                decoration: BoxDecoration(
+                  color: SplitColors.tint(context),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: SplitColors.lineColor(context)),
+                ),
+                child: Text(
+                  'leah@paypal',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    color: SplitColors.ink(context),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ],
     );
@@ -2181,45 +3364,72 @@ class _DemoState extends State<Demo> {
       String date,
       String amount,
       String status,
+      String direction,
+      String avatarName,
+      String avatarId,
+      String currency,
       VoidCallback open,
     })
   >
   activityRows() {
     final rows = [
       for (final transfer in demoTransfers)
-        (
-          title: '${transfer['flag'] ?? ''} ${transfer['recipientName']}'
-              .trim(),
-          date: transfer['createdAt'] as String,
-          amount: currencyAmount(
-            transfer['sourceAmountCents'] as int,
-            transfer['sourceCurrency'] as String,
-          ),
-          status: 'Practice transfer',
-          open: () {
-            activeTransfer = transfer;
-            go('transfer-receipt');
-          },
-        ),
+        () {
+          final isStore = transfer['type'] == 'store-demo';
+          final isRecharge = transfer['type'] == 'wallet-recharge';
+          final recName = transfer['recipientName']?.toString() ?? 'Recipient';
+          final srcCurr = transfer['sourceCurrency']?.toString() ?? 'USD';
+          final tgtCurr = transfer['targetCurrency']?.toString() ?? srcCurr;
+          final c = contacts.where((x) => x.id == transfer['contactId'] || x.name.toLowerCase() == recName.toLowerCase()).firstOrNull;
+          return (
+            title: isRecharge
+                ? 'Wallet recharge'
+                : (isStore ? 'Store order · $recName' : 'Sent to $recName'),
+            date: transfer['createdAt']?.toString() ?? '',
+            amount: currencyAmount((transfer['sourceAmountCents'] as num?)?.toInt() ?? 0, srcCurr),
+            status: 'Demo transfer',
+            direction: isRecharge
+                ? 'Incoming · PayPal Wallet'
+                : (isStore ? 'Merchant · Outgoing' : 'Outgoing · Sent'),
+            avatarName: recName,
+            avatarId: c?.id ?? '',
+            currency: tgtCurr,
+            open: () {
+              activeTransfer = transfer;
+              go('transfer-receipt');
+            },
+          );
+        }(),
       for (final request in reimbursements)
         for (final r in request.recipients)
-          (
-            title: '${r.name} · ${request.title}',
-            date: request.createdAt,
-            amount: currencyAmount(r.amountCents, r.currency),
-            status: displayRequestStatus(request, r),
-            open: () {
-              activeRequestId = request.id;
-              activeRequestQrRecId = r.id;
-              go('request-detail');
-            },
-          ),
+          () {
+            final c = contacts.where((x) => x.name.toLowerCase() == r.name.toLowerCase()).firstOrNull;
+            return (
+              title: '${r.name} · ${request.title}',
+              date: request.createdAt,
+              amount: currencyAmount(r.amountCents, r.currency),
+              status: displayRequestStatus(request, r),
+              direction: 'Incoming · Receiving',
+              avatarName: r.name,
+              avatarId: c?.id ?? '',
+              currency: r.currency,
+              open: () {
+                activeRequestId = request.id;
+                activeRequestQrRecId = r.id;
+                go('request-detail');
+              },
+            );
+          }(),
       if (merchantOpened)
         (
-          title: 'Sandbox Merchant · Sandbox',
+          title: 'Demo Merchant · SS-001 Sandbox',
           date: '',
-          amount: '150.00 USD',
+          amount: currencyAmount(15000, 'USD'),
           status: paidPeople == 3 ? 'Paid' : 'Awaiting payment',
+          direction: 'Merchant · PayPal Sandbox',
+          avatarName: 'Demo Merchant',
+          avatarId: 'leah',
+          currency: 'USD',
           open: () => go('dashboard'),
         ),
     ];
@@ -2245,7 +3455,7 @@ class _DemoState extends State<Demo> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Material(
-        color: SplitColors.surfaceTint,
+        color: SplitColors.tint(context),
         borderRadius: BorderRadius.circular(16),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
@@ -2300,12 +3510,23 @@ class _DemoState extends State<Demo> {
       String date,
       String amount,
       String status,
+      String direction,
+      String avatarName,
+      String avatarId,
+      String currency,
       VoidCallback open,
     })
     row,
   ) => paymentTile(
     name: row.title,
+    leading: SplitContactAvatar(
+      name: row.avatarName,
+      id: row.avatarId,
+      currency: row.currency,
+      size: 36,
+    ),
     detail: [
+      row.direction,
       row.date.split('T').first,
       row.status,
     ].where((value) => value.isNotEmpty).join(' · '),
@@ -2319,7 +3540,7 @@ class _DemoState extends State<Demo> {
     String sub,
     VoidCallback onTap,
   ) => Material(
-    color: Colors.white,
+    color: SplitColors.card(context),
     borderRadius: BorderRadius.circular(14),
     child: InkWell(
       onTap: onTap,
@@ -2328,7 +3549,7 @@ class _DemoState extends State<Demo> {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: SplitColors.line),
+          border: Border.all(color: SplitColors.lineColor(context)),
         ),
         child: Row(
           children: [
@@ -2336,10 +3557,10 @@ class _DemoState extends State<Demo> {
               width: 40,
               height: 40,
               decoration: BoxDecoration(
-                color: SplitColors.surfaceTint,
+                color: SplitColors.tint(context),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Icon(icon, color: SplitColors.primaryInk, size: 20),
+              child: Icon(icon, color: SplitColors.linkInk(context), size: 20),
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -2348,17 +3569,17 @@ class _DemoState extends State<Demo> {
                 children: [
                   Text(
                     title,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontWeight: FontWeight.w800,
-                      color: SplitColors.navy,
+                      color: SplitColors.ink(context),
                       fontSize: 15,
                     ),
                   ),
                   Text(
                     sub,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 14,
-                      color: SplitColors.muted,
+                      color: SplitColors.mutedInk(context),
                     ),
                   ),
                 ],
@@ -2371,12 +3592,37 @@ class _DemoState extends State<Demo> {
   );
 
   // ---------- Tab 2: Activity & Request Detail ----------
+  (int inflowCents, int outflowCents) _computeCycleTotals() {
+    var inflow = cycleRange == '7D' ? 18500 : 42800;
+    var outflow = cycleRange == '7D' ? 9250 : 24650;
+    for (final t in demoTransfers) {
+      final usdCents = convertCents(
+        (t['sourceAmountCents'] as num?)?.toInt() ?? 0,
+        t['sourceCurrency']?.toString() ?? 'USD',
+        'USD',
+      );
+      if (t['type'] == 'wallet-recharge') {
+        inflow += usdCents;
+      } else {
+        outflow += usdCents;
+      }
+    }
+    for (final req in reimbursements) {
+      for (final r in req.recipients) {
+        if (r.status == 'Paid' || r.status == 'Payment received') {
+          inflow += convertCents(r.amountCents, r.currency, 'USD');
+        }
+      }
+    }
+    return (inflow, outflow);
+  }
+
   Widget activityScreen() {
     const filters = [
       'All',
+      'Demo transfer',
       'Waiting for payment',
       'Payment received',
-      'Practice transfer',
       'Awaiting payment',
       'Paid',
     ];
@@ -2385,11 +3631,12 @@ class _DemoState extends State<Demo> {
         .where(
           (row) =>
               (activityFilter == 'All' || row.status == activityFilter) &&
-              '${row.title} ${row.amount} ${row.date}'.toLowerCase().contains(
-                query,
-              ),
+              '${row.title} ${row.direction} ${row.amount} ${row.date}'
+                  .toLowerCase()
+                  .contains(query),
         )
         .toList();
+    final (cycleInflow, cycleOutflow) = _computeCycleTotals();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2409,7 +3656,14 @@ class _DemoState extends State<Demo> {
               ),
           ],
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 12),
+        PaymentCycleCard(
+          range: cycleRange,
+          onRangeChanged: (next) => setState(() => cycleRange = next),
+          inflowCents: cycleInflow,
+          outflowCents: cycleOutflow,
+          pointSeed: demoTransfers.length + reimbursements.length,
+        ),
         SplitTextField(
           label: 'Search activity',
           controller: activitySearch,
@@ -2418,10 +3672,12 @@ class _DemoState extends State<Demo> {
         const SizedBox(height: 10),
         Wrap(
           spacing: 6,
+          runSpacing: 6,
           children: [
             for (final filter in filters)
               ChoiceChip(
                 label: Text(filter),
+                materialTapTargetSize: MaterialTapTargetSize.padded,
                 selected: activityFilter == filter,
                 onSelected: (_) => setState(() => activityFilter = filter),
               ),
@@ -2465,29 +3721,64 @@ class _DemoState extends State<Demo> {
         req.recipients.where((r) => r.id == activeRequestQrRecId).firstOrNull ??
         req.recipients.firstOrNull;
 
+    final collectedCents = req.recipients
+        .where((r) => r.status == 'Paid' || r.status == 'Payment received')
+        .fold<int>(0, (s, r) => s + r.amountCents);
+    final totalReqCents = req.totalRequestedCents;
+    final waitingCnt = req.recipients
+        .where((r) => r.status != 'Paid' && r.status != 'Payment received')
+        .length;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SplitScreenHeader(
           title: req.title,
           subtitle:
-              '${req.id} · ${req.recipients.where((r) => !['Paid', 'Payment received'].contains(r.status)).length} pending',
-          onBack: () => go('activity'),
+              '${req.id} · ${waitingCnt == 0 ? 'All received' : '$waitingCnt waiting'}',
+          onBack: goBack,
           trailing: SplitBadge(
-            req.demo ? 'Practice mode' : 'Reimbursement',
+            req.demo ? 'Demo mode Receiving' : 'Reimbursement',
             preview: true,
           ),
         ),
+        if (req.demo)
+          SplitCallout(
+            message: waitingCnt > 0
+                ? 'Demo payments arrive at short staggered intervals and trigger payment alerts automatically.'
+                : 'All demo payments in this request settled.',
+            kind: waitingCnt > 0 ? CalloutKind.info : CalloutKind.success,
+            trailing: !kIsWeb && waitingCnt > 0
+                ? TextButton(
+                    onPressed: () async {
+                      try {
+                        await _notifChannel.invokeMethod('requestPermission');
+                        if (mounted) showFeedback('Notification permission checked.');
+                      } catch (_) {
+                        if (mounted) showFeedback('Using in-app alert banner on this device.');
+                      }
+                    },
+                    child: const Text('Enable OS alerts'),
+                  )
+                : null,
+          ),
+        const SizedBox(height: 10),
         twoPane(
           SplitCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Receipt evidence',
+                  req.demo ? 'Receiving summary' : 'Receipt evidence',
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 8),
+                lineRow(
+                  'Amount collected',
+                  '${currencyAmount(collectedCents, req.currency)} / ${currencyAmount(totalReqCents, req.currency)}',
+                  bold: true,
+                ),
+                if (req.dueDate.isNotEmpty) lineRow('Due date', req.dueDate),
+                const SizedBox(height: 6),
                 if (req.evidenceDataUrl.contains(','))
                   ClipRRect(
                     borderRadius: BorderRadius.circular(12),
@@ -2509,7 +3800,7 @@ class _DemoState extends State<Demo> {
                   lineRow('Tax', currencyAmount(req.taxCents, req.currency)),
                 if (req.tipCents > 0)
                   lineRow('Tip', currencyAmount(req.tipCents, req.currency)),
-                const Divider(height: 18, color: SplitColors.line),
+                Divider(height: 18, color: SplitColors.lineColor(context)),
                 lineRow(
                   'Bill total',
                   currencyAmount(req.totalCents, req.currency),
@@ -2523,7 +3814,7 @@ class _DemoState extends State<Demo> {
                   ),
                 const SplitCallout(
                   message:
-                      'Photographed receipt evidence creates peer reimbursement links. Commercial PayPal Orders v2 checkout applies only to Sandbox Merchant SS-001.',
+                      'Shared bill and request links use Demo settlement unless PayPal Orders v2 is used for Demo Merchant SS-001.',
                 ),
               ],
             ),
@@ -2545,12 +3836,16 @@ class _DemoState extends State<Demo> {
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
                         color: r.deliveryStatus == 'Failed'
-                            ? const Color(0xFFF4DA9C)
-                            : SplitColors.line,
+                            ? (SplitColors.isDark(context)
+                                  ? const Color(0xFF7D5A1C)
+                                  : const Color(0xFFF4DA9C))
+                            : SplitColors.lineColor(context),
                       ),
                       color: r.deliveryStatus == 'Failed'
-                          ? SplitColors.amberBg.withValues(alpha: 0.4)
-                          : Colors.white,
+                          ? (SplitColors.isDark(context)
+                                ? const Color(0xFF2B2214)
+                                : SplitColors.amberBg.withValues(alpha: 0.4))
+                          : SplitColors.card(context),
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2571,9 +3866,9 @@ class _DemoState extends State<Demo> {
                                   ),
                                   Text(
                                     'Reason: ${r.reason}',
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                       fontSize: 14,
-                                      color: SplitColors.muted,
+                                      color: SplitColors.mutedInk(context),
                                     ),
                                   ),
                                 ],
@@ -2649,11 +3944,11 @@ class _DemoState extends State<Demo> {
                                     ? 'View receipt'
                                     : 'Open share',
                               ),
-                              onPressed: () => setState(() {
+                              onPressed: () {
                                 payerReimbRequest = req;
                                 payerReimbRecipient = r;
-                                page = 'reimbursement-payer';
-                              }),
+                                go('reimbursement-payer');
+                              },
                             ),
                           ],
                         ),
@@ -2724,13 +4019,13 @@ class _DemoState extends State<Demo> {
                 ...req.items.map(
                   (i) => lineRow(i.name, centsStr(i.amountCents)),
                 ),
-                const Divider(height: 16, color: SplitColors.line),
+                Divider(height: 16, color: SplitColors.lineColor(context)),
                 lineRow('Bill total', centsStr(req.totalCents), bold: true),
               ],
             ),
           ),
           SplitCard(
-            color: SplitColors.surfaceTint,
+            color: SplitColors.tint(context),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -2746,6 +4041,38 @@ class _DemoState extends State<Demo> {
                       ? 'Practice request with simulated settlement. No money moves.'
                       : 'Personal receipt reimbursement link. PayPal Sandbox merchant checkout applies to Sandbox Merchant SS-001.',
                 ),
+                if (req.demo && rec.status != 'Paid') ...[
+                  const SizedBox(height: 12),
+                  _paymentSourceBlock(
+                    convertCents(rec.amountCents, rec.currency, 'USD'),
+                  ),
+                  const SizedBox(height: 12),
+                  SplitPrimaryButton(
+                    label: 'Pay',
+                    onPressed:
+                        !_canFundPayment(
+                          convertCents(rec.amountCents, rec.currency, 'USD'),
+                        )
+                        ? null
+                        : () {
+                            final usd = convertCents(
+                              rec.amountCents,
+                              rec.currency,
+                              'USD',
+                            );
+                            setState(() {
+                              _deductWalletIfSelected(usd);
+                              rec.status = 'Paid';
+                              rec.demoSettled = true;
+                              rec.settledAt ??= _now().toIso8601String();
+                            });
+                            unawaited(saveLocalDemo());
+                            showFeedback(
+                              'Paid ${currencyAmount(rec.amountCents, rec.currency)} (${paymentSource == 'wallet' ? 'PayPal Wallet' : 'Linked Card'}).',
+                            );
+                          },
+                  ),
+                ],
               ],
             ),
           ),
@@ -2812,39 +4139,41 @@ class _DemoState extends State<Demo> {
         ),
         LayoutBuilder(
           builder: (context, constraints) {
-            final actions = [
-              homeAction(
-                label: 'Upload photo',
-                icon: Icons.upload_file_rounded,
-                onTap: capturingReceipt
-                    ? null
-                    : () => captureReceipt(ImageSource.gallery, inline: false),
-              ),
-              homeAction(
-                label: 'Enter manually',
-                icon: Icons.edit_note_rounded,
-                onTap: capturingReceipt
-                    ? null
-                    : () {
-                        setState(() {
-                          clearReceipt();
-                          billExtractState = 'ready';
-                        });
-                        go('bill-review');
-                      },
-              ),
-            ];
-            if (constraints.maxWidth >= 600) {
-              return Row(
-                children: [
-                  Expanded(child: actions[0]),
-                  const SizedBox(width: 12),
-                  Expanded(child: actions[1]),
-                ],
+            final uploadBtn = homeAction(
+              label: 'Upload photo',
+              icon: Icons.upload_file_rounded,
+              onTap: capturingReceipt
+                  ? null
+                  : () => captureReceipt(ImageSource.gallery, inline: false),
+            );
+            final manualBtn = homeAction(
+              label: 'Enter manually',
+              icon: Icons.edit_note_rounded,
+              onTap: capturingReceipt
+                  ? null
+                  : () {
+                      setState(() {
+                        clearReceipt();
+                        billExtractState = 'ready';
+                      });
+                      go('bill-review');
+                    },
+            );
+            if (constraints.maxWidth >= 240) {
+              return IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(child: uploadBtn),
+                    const SizedBox(width: 12),
+                    Expanded(child: manualBtn),
+                  ],
+                ),
               );
             }
             return Column(
-              children: [actions[0], const SizedBox(height: 12), actions[1]],
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [uploadBtn, const SizedBox(height: 12), manualBtn],
             );
           },
         ),
@@ -3011,7 +4340,7 @@ class _DemoState extends State<Demo> {
         ),
         if (billExtractState == 'loading')
           SplitCard(
-            color: SplitColors.surfaceTint,
+            color: SplitColors.tint(context),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -3035,7 +4364,7 @@ class _DemoState extends State<Demo> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 SplitCard(
-                  color: SplitColors.surfaceTint,
+                  color: SplitColors.tint(context),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -3136,7 +4465,7 @@ class _DemoState extends State<Demo> {
   }
 
   Widget receiptReviewAction() => Material(
-    color: Colors.white,
+    color: SplitColors.card(context),
     child: SafeArea(
       top: false,
       child: Center(
@@ -3194,6 +4523,7 @@ class _DemoState extends State<Demo> {
   void clearPaymentDraft() {
     recipientDrafts = [];
     editingAskRows.clear();
+    _pendingStoreBuy = null;
     sendReady = false;
     askSend = false;
     groupAttemptId = null;
@@ -3364,6 +4694,29 @@ class _DemoState extends State<Demo> {
     final equalRows = receiptAttached
         ? equalReceiptDraft(message, billDraft, contacts)
         : null;
+    final storeMatch = receiptAttached ? null : parseStoreBuyCommand(message);
+    if (storeMatch != null) {
+      final subtotal = storeMatch.product.priceCents * storeMatch.qty;
+      final reply =
+          'Prepared ${storeMatch.qty} × ${storeMatch.product.name} (${currencyAmount(subtotal, 'USD')}). Tap Buy now to purchase, or Add to Cart.';
+      if (!mounted || page != 'talk' || epoch != turnEpoch) return;
+      setState(() {
+        askBusy = false;
+        requestAttemptId = null;
+        askSend = false;
+        sendReady = false;
+        recipientDrafts = [];
+        editingAskRows.clear();
+        groupAttemptId = null;
+        _pendingStoreBuy = storeMatch;
+        askMessages.add((user: false, text: reply));
+      });
+      if (voiceEnabled) {
+        unawaited(speakAskReply(reply, advance: false));
+      }
+      scrollToAskDraft();
+      return;
+    }
     Map<String, dynamic>? parsed;
     if (connected && equalRows == null) {
       try {
@@ -3523,6 +4876,7 @@ class _DemoState extends State<Demo> {
     setState(() {
       askBusy = false;
       requestAttemptId = null;
+      _pendingStoreBuy = null;
       askSend = send;
       sendReady = send && !clarify;
       if (foundRecipients || !isFollowUp) recipientDrafts = rows;
@@ -3570,8 +4924,11 @@ class _DemoState extends State<Demo> {
       if (mounted && epoch == voiceEpoch) {
         setState(
           () => voiceStatus =
-              'Audio unavailable. You can continue with the reply above.',
+              'Audio unavailable. You can continue with the draft.',
         );
+        if (advance && page == 'talk') {
+          go('review-transfer');
+        }
       }
     }
   }
@@ -3728,51 +5085,52 @@ class _DemoState extends State<Demo> {
             onChanged: (value) =>
                 billDraft.totalCents = inputCents(value, billDraft.currency),
           ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Currency', style: Theme.of(context).textTheme.labelLarge),
-              const SizedBox(height: 8),
-              currencyPicker('', billDraft.currency, (currency) {
-                if (billDraft.currency == currency) return;
-                setState(() {
-                  billDraft.currency = currency;
-                  if (currency == 'JPY') {
-                    billDraft.totalCents =
-                        (billDraft.totalCents / 100).round() * 100;
-                    for (final item in billDraft.items) {
-                      item.amountCents = (item.amountCents / 100).round() * 100;
-                    }
-                    billDraft.taxCents =
-                        (billDraft.taxCents / 100).round() * 100;
-                    billDraft.tipCents =
-                        (billDraft.tipCents / 100).round() * 100;
-                  }
-                  if (billTotalController.text.isNotEmpty) {
-                    billTotalController.text = (billDraft.totalCents / 100)
-                        .toStringAsFixed(currency == 'JPY' ? 0 : 2);
-                  }
-                });
-              }),
-            ],
-          ),
+          currencyPicker('Currency', billDraft.currency, (currency) {
+            if (billDraft.currency == currency) return;
+            setState(() {
+              billDraft.currency = currency;
+              if (currency == 'JPY') {
+                billDraft.totalCents =
+                    (billDraft.totalCents / 100).round() * 100;
+                for (final item in billDraft.items) {
+                  item.amountCents = (item.amountCents / 100).round() * 100;
+                }
+                billDraft.taxCents = (billDraft.taxCents / 100).round() * 100;
+                billDraft.tipCents = (billDraft.tipCents / 100).round() * 100;
+              }
+              if (billTotalController.text.isNotEmpty) {
+                billTotalController.text = (billDraft.totalCents / 100)
+                    .toStringAsFixed(currency == 'JPY' ? 0 : 2);
+              }
+            });
+          }),
           firstFlex: 2,
+          minSideBySideWidth: 260,
         ),
         if (billDraft.items.isNotEmpty) ...[
           const SizedBox(height: 12),
           ExpansionTile(
             key: ObjectKey(billDraft),
-            tilePadding: const EdgeInsets.symmetric(horizontal: 10),
-            childrenPadding: const EdgeInsets.fromLTRB(4, 4, 4, 8),
+            tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+            childrenPadding: const EdgeInsets.fromLTRB(8, 4, 8, 10),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: SplitColors.lineColor(context)),
             ),
             collapsedShape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: SplitColors.lineColor(context)),
             ),
-            collapsedBackgroundColor: SplitColors.surfaceTint,
-            backgroundColor: SplitColors.surfaceTint,
-            title: Text('Line items (${billDraft.items.length})'),
+            collapsedBackgroundColor: SplitColors.tint(context),
+            backgroundColor: SplitColors.tint(context),
+            collapsedTextColor: SplitColors.ink(context),
+            textColor: SplitColors.ink(context),
+            collapsedIconColor: SplitColors.ink(context),
+            iconColor: SplitColors.ink(context),
+            title: Text(
+              'Line items (${billDraft.items.length})',
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
             children: [
               for (final item in billDraft.items)
                 Padding(
@@ -3781,7 +5139,10 @@ class _DemoState extends State<Demo> {
                     TextFormField(
                       key: ObjectKey(item),
                       initialValue: item.name,
-                      decoration: const InputDecoration(labelText: 'Item name'),
+                      decoration: const InputDecoration(
+                        labelText: 'Item name',
+                        constraints: BoxConstraints(minHeight: 50),
+                      ),
                       onChanged: (value) => item.name = value,
                     ),
                     TextFormField(
@@ -3791,6 +5152,7 @@ class _DemoState extends State<Demo> {
                       ),
                       decoration: InputDecoration(
                         labelText: 'Amount (${billDraft.currency})',
+                        constraints: const BoxConstraints(minHeight: 50),
                       ),
                       keyboardType: TextInputType.numberWithOptions(
                         decimal: billDraft.currency != 'JPY',
@@ -3801,6 +5163,7 @@ class _DemoState extends State<Demo> {
                       ),
                     ),
                     firstFlex: 2,
+                    minSideBySideWidth: 260,
                   ),
                 ),
             ],
@@ -3839,6 +5202,8 @@ class _DemoState extends State<Demo> {
   void prepareAskTransfer(RecipientDraft row) {
     final contact = contacts.firstWhere((c) => c.id == row.contactId);
     paymentContact = contact;
+    _transferStartedWithContact = false;
+    _transferEnteredSide = 'send';
     paymentCurrency = row.currency;
     receiveCurrency = fxRates.containsKey(contact.currency)
         ? contact.currency
@@ -3856,8 +5221,8 @@ class _DemoState extends State<Demo> {
     children: [
       SplitScreenHeader(
         title: 'Ask AI',
-        subtitle: 'Type, dictate, or attach a receipt',
-        onBack: () => go('home'),
+        subtitle: 'Buy store items, send money, or split',
+        onBack: goBack,
         trailing: IconButton(
           tooltip: voiceEnabled ? 'Turn voice off' : 'Turn voice on',
           icon: Icon(voiceEnabled ? Icons.volume_up : Icons.volume_off),
@@ -3867,19 +5232,62 @@ class _DemoState extends State<Demo> {
           }),
         ),
       ),
+      Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              for (final sample in const [
+                'Buy 2 desk lamps',
+                'Send Allen \$20 for coffee',
+                'Ask Maya \$20 for dinner',
+              ])
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ActionChip(
+                    avatar: Icon(
+                      Icons.auto_awesome_rounded,
+                      size: 16,
+                      color: SplitColors.linkInk(context),
+                    ),
+                    label: Text(sample),
+                    onPressed: askBusy
+                        ? null
+                        : () {
+                            askInput.text = sample;
+                            unawaited(submitAsk());
+                          },
+                  ),
+                ),
+              ActionChip(
+                avatar: Icon(
+                  Icons.receipt_long_rounded,
+                  size: 16,
+                  color: SplitColors.linkInk(context),
+                ),
+                label: const Text('Use sample receipt'),
+                onPressed: askBusy ? null : openBundledSampleReceipt,
+              ),
+            ],
+          ),
+        ),
+      ),
       SplitCard(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             if (askMessages.isEmpty) ...[
               Text(
-                'Start with an amount and a name.',
+                'Ask AI to buy, send, or split.',
                 style: Theme.of(context).textTheme.titleLarge,
               ),
-              const SizedBox(height: 8),
-              const Text(
-                'Try “Give Maya \$20 and Arun \$15.” You can add more people in another message.',
+              const SizedBox(height: 6),
+              Text(
+                'Tap a quick prompt above, upload a receipt, or type below.',
+                style: Theme.of(context).textTheme.bodySmall,
               ),
+              const SizedBox(height: 12),
             ],
             for (final msg in askMessages)
               Align(
@@ -3891,11 +5299,38 @@ class _DemoState extends State<Demo> {
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
                     color: msg.user
-                        ? SplitColors.surfaceTint
-                        : SplitColors.surfaceSubtle,
-                    borderRadius: BorderRadius.circular(12),
+                        ? SplitColors.primary
+                        : SplitColors.secondaryCard(context),
+                    borderRadius: BorderRadius.circular(14),
+                    border: msg.user
+                        ? null
+                        : Border.all(color: SplitColors.lineColor(context)),
                   ),
-                  child: Text(msg.text),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (!msg.user)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 3),
+                          child: Text(
+                            'AI',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                              color: SplitColors.linkInk(context),
+                            ),
+                          ),
+                        ),
+                      Text(
+                        msg.text,
+                        style: TextStyle(
+                          color: msg.user
+                              ? Colors.white
+                              : SplitColors.ink(context),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             if (askBusy) const LinearProgressIndicator(),
@@ -3916,6 +5351,66 @@ class _DemoState extends State<Demo> {
                   ),
                 ],
               ),
+            if (_pendingStoreBuy != null) ...[
+              const SizedBox(height: 16),
+              SplitCard(
+                color: SplitColors.tint(context),
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        SizedBox(
+                          width: 60,
+                          child: _productMediaBox(
+                            _pendingStoreBuy!.product,
+                            height: 60,
+                            radius: 10,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '${_pendingStoreBuy!.qty} × ${_pendingStoreBuy!.product.name}',
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                '${_pendingStoreBuy!.product.seller} · ${currencyAmount(_pendingStoreBuy!.product.priceCents * _pendingStoreBuy!.qty, 'USD')}',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    twoButtons(
+                      SplitSecondaryButton(
+                        label: 'Add to Cart',
+                        onPressed: () => _addToCart(
+                          _pendingStoreBuy!.product,
+                          qty: _pendingStoreBuy!.qty,
+                          openCart: true,
+                        ),
+                      ),
+                      SplitPrimaryButton(
+                        label: 'Buy now',
+                        onPressed: () => _startDirectProductCheckout(
+                          _pendingStoreBuy!.product,
+                          _pendingStoreBuy!.qty,
+                        ),
+                      ),
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                    ),
+                  ],
+                ),
+              ),
+            ],
             if (recipientDrafts.isNotEmpty) ...[
               const SizedBox(height: 20),
               Text(
@@ -3935,7 +5430,7 @@ class _DemoState extends State<Demo> {
                   )
                 else ...[
                   SplitCard(
-                    color: SplitColors.surfaceTint,
+                    color: SplitColors.tint(context),
                     padding: const EdgeInsets.all(14),
                     child: Column(
                       children: [
@@ -4042,93 +5537,213 @@ class _DemoState extends State<Demo> {
     ],
   );
 
-  Widget talkComposer() => Material(
-    color: Colors.white,
-    child: SafeArea(
-      top: false,
-      child: Center(
-        heightFactor: 1,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 680),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (micState == _MicState.listening)
-                  const Text('Recording… Tap the microphone to finish.'),
-                if (micState == _MicState.transcribing)
-                  const Text('Transcribing…'),
-                if (micError.isNotEmpty)
-                  Semantics(liveRegion: true, child: Text(micError)),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.center,
+  Widget talkComposer() {
+    final isDark = SplitColors.isDark(context);
+    return Material(
+      color: SplitColors.card(context),
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border(top: BorderSide(color: SplitColors.lineColor(context))),
+        ),
+        child: SafeArea(
+          top: false,
+          child: Center(
+            heightFactor: 1,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 680),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    PopupMenuButton<ImageSource>(
-                      tooltip: 'Attach receipt',
-                      enabled: !capturingReceipt && !askBusy,
-                      icon: const Icon(Icons.attach_file),
-                      onSelected: (source) =>
-                          captureReceipt(source, inline: true),
-                      itemBuilder: (_) => const [
-                        PopupMenuItem(
-                          value: ImageSource.camera,
-                          child: Text('Camera'),
+                    if (micState == _MicState.listening)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Text(
+                          'Recording… Tap the microphone to finish.',
+                          style: TextStyle(
+                            color: SplitColors.linkInk(context),
+                            fontWeight: FontWeight.w700,
+                            fontSize: 12,
+                          ),
                         ),
-                        PopupMenuItem(
-                          value: ImageSource.gallery,
-                          child: Text('Upload'),
+                      ),
+                    if (micState == _MicState.transcribing)
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 6),
+                        child: Text('Transcribing…'),
+                      ),
+                    if (micError.isNotEmpty)
+                      Semantics(liveRegion: true, child: Text(micError)),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: SplitColors.tint(context),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: SplitColors.lineColor(context),
+                            ),
+                          ),
+                          child: PopupMenuButton<ImageSource>(
+                            tooltip: 'Attach receipt',
+                            enabled: !capturingReceipt && !askBusy,
+                            icon: Icon(
+                              Icons.add_photo_alternate_outlined,
+                              color: SplitColors.linkInk(context),
+                              size: 21,
+                            ),
+                            onSelected: (source) =>
+                                captureReceipt(source, inline: true),
+                            itemBuilder: (_) => const [
+                              PopupMenuItem(
+                                value: ImageSource.camera,
+                                child: Text('Camera'),
+                              ),
+                              PopupMenuItem(
+                                value: ImageSource.gallery,
+                                child: Text('Upload'),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: micState == _MicState.listening
+                                ? SplitColors.coral.withValues(alpha: 0.16)
+                                : SplitColors.secondaryCard(context),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: micState == _MicState.listening
+                                  ? SplitColors.coral
+                                  : SplitColors.lineColor(context),
+                            ),
+                          ),
+                          child: IconButton(
+                            onPressed:
+                                askBusy || micState == _MicState.transcribing
+                                    ? null
+                                    : recordAskSpeech,
+                            tooltip: micState == _MicState.listening
+                                ? 'Stop recording'
+                                : 'Microphone',
+                            icon: Icon(
+                              micState == _MicState.listening
+                                  ? Icons.stop_circle_rounded
+                                  : Icons.mic_rounded,
+                              color: micState == _MicState.listening
+                                  ? SplitColors.coral
+                                  : SplitColors.ink(context),
+                              size: 21,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: TextField(
+                            controller: askInput,
+                            minLines: 1,
+                            maxLines: 3,
+                            textInputAction: TextInputAction.send,
+                            onSubmitted: (_) => submitAsk(),
+                            style: TextStyle(
+                              color: SplitColors.ink(context),
+                              fontSize: 15,
+                              fontWeight: FontWeight.w500,
+                            ),
+                            decoration: InputDecoration(
+                              hintText: 'Ask AI…',
+                              hintStyle: TextStyle(
+                                color: SplitColors.mutedInk(context)
+                                    .withValues(alpha: 0.7),
+                              ),
+                              isDense: true,
+                              constraints: const BoxConstraints(minHeight: 44),
+                              filled: true,
+                              fillColor: isDark
+                                  ? SplitColors.darkSecondary
+                                  : SplitColors.surfaceSubtle,
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 11,
+                              ),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                borderSide: BorderSide(
+                                  color: SplitColors.lineColor(context),
+                                  width: 1.5,
+                                ),
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                borderSide: BorderSide(
+                                  color: SplitColors.lineColor(context),
+                                  width: 1.5,
+                                ),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                borderSide: const BorderSide(
+                                  color: SplitColors.primary,
+                                  width: 1.8,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        ValueListenableBuilder<TextEditingValue>(
+                          valueListenable: askInput,
+                          builder: (context, value, _) {
+                            final canSend =
+                                !askBusy && value.text.trim().isNotEmpty;
+                            return SizedBox(
+                              width: 44,
+                              height: 44,
+                              child: FilledButton(
+                                onPressed: canSend ? submitAsk : null,
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: SplitColors.primary,
+                                  disabledBackgroundColor:
+                                      SplitColors.secondaryCard(context),
+                                  foregroundColor: Colors.white,
+                                  disabledForegroundColor: SplitColors.mutedInk(
+                                    context,
+                                  ).withValues(alpha: 0.5),
+                                  padding: EdgeInsets.zero,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                ),
+                                child: const Tooltip(
+                                  message: 'Send',
+                                  child: Icon(
+                                    Icons.arrow_upward_rounded,
+                                    size: 21,
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
                         ),
                       ],
                     ),
-                    IconButton(
-                      onPressed: askBusy || micState == _MicState.transcribing
-                          ? null
-                          : recordAskSpeech,
-                      tooltip: micState == _MicState.listening
-                          ? 'Stop recording'
-                          : 'Microphone',
-                      icon: Icon(
-                        micState == _MicState.listening
-                            ? Icons.stop_circle
-                            : Icons.mic,
-                      ),
-                    ),
-                    Expanded(
-                      child: TextField(
-                        controller: askInput,
-                        minLines: 1,
-                        maxLines: 4,
-                        textInputAction: TextInputAction.send,
-                        onSubmitted: (_) => submitAsk(),
-                        decoration: const InputDecoration(
-                          labelText: 'Message',
-                          hintText: 'Type a message',
-                          isDense: true,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    ValueListenableBuilder<TextEditingValue>(
-                      valueListenable: askInput,
-                      builder: (context, value, _) => IconButton.filled(
-                        tooltip: 'Send',
-                        onPressed: askBusy || value.text.trim().isEmpty
-                            ? null
-                            : submitAsk,
-                        icon: const Icon(Icons.send),
-                      ),
-                    ),
                   ],
                 ),
-              ],
+              ),
             ),
           ),
         ),
       ),
-    ),
-  );
+    );
+  }
 
   void openScannedLink(String rawValue) {
     final raw = rawValue.trim();
@@ -4138,6 +5753,62 @@ class _DemoState extends State<Demo> {
     if (raw == 'SS-001' || fragment == 'purchase/SS-001') {
       go('review');
       return;
+    }
+    if (fragment != null && fragment.startsWith('receive/')) {
+      final parsed = Uri.tryParse('https://local/$fragment');
+      final segs = parsed?.pathSegments ?? const [];
+      if (segs.length >= 2 && segs[1].isNotEmpty) {
+        final targetId = Uri.decodeComponent(segs[1]).trim().toLowerCase();
+        final qp = parsed?.queryParameters ?? const <String, String>{};
+        final rawCurr = (qp['currency'] ?? '').trim().toUpperCase();
+        final matched = contacts
+            .where(
+              (c) =>
+                  c.id.toLowerCase() == targetId ||
+                  c.name.toLowerCase() == targetId,
+            )
+            .firstOrNull;
+        final payCurr = fxRates.containsKey(rawCurr)
+            ? rawCurr
+            : (matched != null && fxRates.containsKey(matched.currency)
+                  ? matched.currency
+                  : 'USD');
+        final target =
+            matched ??
+            SplitContact(
+              id: targetId,
+              name: targetId == 'leah'
+                  ? 'Leah'
+                  : (targetId[0].toUpperCase() + targetId.substring(1)),
+              country: 'United States',
+              currency: payCurr,
+              flag: '🇺🇸',
+            );
+        final amtRaw = (qp['amount'] ?? '').trim();
+        final cents = amtRaw.isEmpty ? 0 : inputCents(amtRaw, payCurr);
+        setState(() {
+          scannerState = _ScannerState.ready;
+          scannerError = '';
+          contactSearch.clear();
+          paymentContact = target;
+          _transferStartedWithContact = false;
+          _transferEnteredSide = 'send';
+          paymentCurrency = payCurr;
+          receiveCurrency = fxRates.containsKey(target.currency)
+              ? target.currency
+              : 'USD';
+          if (cents > 0) {
+            amountController.text = formatMajorInput(cents, payCurr);
+          } else {
+            amountController.clear();
+          }
+          noteController.text = 'QR payment to ${target.name}';
+          transferAttemptId = null;
+          transferFromAsk = false;
+        });
+        go('send-money');
+        return;
+      }
     }
     if (fragment != null &&
         RegExp(r'^(pay|req)/[a-zA-Z0-9-]+$').hasMatch(fragment)) {
@@ -4154,7 +5825,7 @@ class _DemoState extends State<Demo> {
       scannerState = _ScannerState.invalid;
       scannerError = raw.isEmpty
           ? 'Scan a QR or paste a link first.'
-          : 'Unsupported code. Use an SS-001 merchant code or a PayPal Hackathon payment link.';
+          : 'Unsupported code. Use an SS-001 merchant code or an AI payment link.';
     });
   }
 
@@ -4164,9 +5835,9 @@ class _DemoState extends State<Demo> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SplitScreenHeader(
-          title: 'Scan & pay',
-          subtitle: 'Pay a supported merchant · Sandbox',
-          onBack: () => go('home'),
+          title: 'Scan & Pay',
+          subtitle: 'Pay a supported merchant · PayPal Sandbox',
+          onBack: goBack,
         ),
         if (scanning && widget.enableLiveCamera)
           SizedBox(
@@ -4232,7 +5903,7 @@ class _DemoState extends State<Demo> {
       children: [
         lineRow('Shared kitchen essentials', '\$120.00'),
         lineRow('Desk lamp ($lamp)', '\$30.00'),
-        const Divider(height: 18, color: SplitColors.line),
+        Divider(height: 18, color: SplitColors.lineColor(context)),
         lineRow('Total', '\$150.00 USD', bold: true),
       ],
     ),
@@ -4428,10 +6099,22 @@ class _DemoState extends State<Demo> {
             ),
           ),
           SplitCard(
-            color: SplitColors.surfaceTint,
+            color: SplitColors.tint(context),
             child: Column(
               children: [
-                if (activeUrl != null) QrImageView(data: activeUrl, size: 136),
+                if (activeUrl != null)
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: QrImageView(
+                      data: activeUrl,
+                      size: 136,
+                      backgroundColor: Colors.white,
+                    ),
+                  ),
                 const SizedBox(height: 10),
                 Text(
                   '$selected · ${money(share(selected))} USD',
@@ -4489,47 +6172,111 @@ class _DemoState extends State<Demo> {
     ],
   );
 
-  Widget payerScreen() => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      SplitScreenHeader(
-        title: 'Your share · ${money(share(selected))} USD',
-        onBack: () => go('requests'),
-      ),
-      SplitCard(
-        color: SplitColors.surfaceTint,
-        child: Column(
-          children: [
-            lineRow('Participant', selected),
-            lineRow('Total due', '${money(share(selected))} USD', bold: true),
-            const SizedBox(height: 10),
-            SplitPrimaryButton(
-              label: 'Pay with PayPal',
-              backgroundColor: SplitColors.paypalBg,
-              foregroundColor: SplitColors.paypalInk,
-              onPressed: () {
-                final u = shareLink(selected);
-                if (connected && u != null) {
-                  openPayerUrl(u);
-                } else {
-                  go('handoff');
-                }
-              },
-            ),
-          ],
+  Widget payerScreen() {
+    final shareUsdCents = (share(selected) * 100).round();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SplitScreenHeader(
+          title: 'Your share · ${money(share(selected))} USD',
+          onBack: () => go('requests'),
         ),
-      ),
-    ],
-  );
+        SplitCard(
+          color: SplitColors.tint(context),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              lineRow('Participant', selected),
+              lineRow('Total due', '${money(share(selected))} USD', bold: true),
+              const SizedBox(height: 12),
+              _paymentSourceBlock(shareUsdCents),
+              const SizedBox(height: 12),
+              SplitPrimaryButton(
+                label: 'Pay with PayPal',
+                backgroundColor: SplitColors.paypalBg,
+                foregroundColor: SplitColors.paypalInk,
+                onPressed: () {
+                  final u = shareLink(selected);
+                  if (connected && u != null) {
+                    openPayerUrl(u);
+                  } else {
+                    go('handoff');
+                  }
+                },
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
 
-  // ---------- Tab 3: Store (super.money splitStore) + Product + Cart + Rent ----------
+  // ---------- Tab 3: Store (11 Products + Honest Retail Scope + Cart + Checkout) ----------
+  void _openProductDetail(StoreProduct p) {
+    setState(() {
+      activeProduct = p;
+      _productDetailQty = 1;
+    });
+    go('product');
+  }
+
+  void _addToCart(StoreProduct p, {int qty = 1, bool openCart = false}) {
+    setState(() {
+      final row = cart.where((c) => c.product.id == p.id).firstOrNull;
+      if (row != null) {
+        row.qty = (row.qty + qty).clamp(1, 20);
+      } else {
+        cart.add(CartEntry(product: p, qty: qty.clamp(1, 20)));
+      }
+    });
+    if (openCart) {
+      go('cart');
+    } else {
+      showFeedback('${p.name} added to cart');
+    }
+  }
+
+  void _startDirectProductCheckout(StoreProduct p, int qty) {
+    setState(() {
+      cart
+        ..clear()
+        ..add(CartEntry(product: p, qty: qty.clamp(1, 20)));
+      _pendingStoreBuy = null;
+    });
+    go('checkout-review');
+  }
+
+  Widget _productMediaBox(StoreProduct p, {double height = 136, double radius = 12}) =>
+      Container(
+        height: height,
+        width: double.infinity,
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(radius),
+          border: Border.all(color: const Color(0xFFEEF2F7)),
+        ),
+        child: Image.asset(
+          p.imageAsset,
+          fit: BoxFit.contain,
+          errorBuilder: (_, _, _) => Icon(
+            p.icon,
+            size: height * 0.42,
+            color: SplitColors.primaryInk,
+          ),
+        ),
+      );
+
   Widget storeScreen() {
     const categories = [
       'All',
       'Kitchen',
       'Lighting',
-      'Furniture',
+      'Appliances',
+      'Storage',
       'Cleaning',
+      'Electronics',
+      'Home',
       'Retailers',
     ];
     final q = storeQuery.trim().toLowerCase();
@@ -4541,7 +6288,8 @@ class _DemoState extends State<Demo> {
                     (storeCategory == 'All' || p.category == storeCategory) &&
                     (q.isEmpty ||
                         p.name.toLowerCase().contains(q) ||
-                        p.seller.toLowerCase().contains(q)),
+                        p.seller.toLowerCase().contains(q) ||
+                        p.description.toLowerCase().contains(q)),
               )
               .toList();
     final retailers = (storeCategory == 'All' || storeCategory == 'Retailers')
@@ -4555,6 +6303,9 @@ class _DemoState extends State<Demo> {
               )
               .toList()
         : <ExternalRetailer>[];
+    final sponsoredProduct = kStoreCatalog
+        .where((p) => p.id == kSponsoredProductId)
+        .firstOrNull;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -4571,32 +6322,38 @@ class _DemoState extends State<Demo> {
                 ConstrainedBox(
                   constraints: BoxConstraints(
                     maxWidth: constraints.maxWidth >= 420
-                        ? constraints.maxWidth - 220
+                        ? constraints.maxWidth - 230
                         : constraints.maxWidth,
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        'splitStore',
-                        style: Theme.of(context).textTheme.headlineMedium,
+                      Wrap(
+                        spacing: 8,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Text('Store', style: Theme.of(context).textTheme.headlineMedium),
+                          const SplitBadge('Demo fixtures', preview: true),
+                        ],
                       ),
                       Text(
                         interests.isEmpty
-                            ? 'Sample inventory · Preview'
+                            ? 'Household catalog · Optional split & Demo Merchant PayPal checkout'
                             : 'Preferences: ${interests.join(', ')}',
                       ),
                     ],
                   ),
                 ),
                 Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
+                  spacing: 8,
+                  runSpacing: 8,
                   crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
-                    TextButton(
+                    SplitSecondaryButton(
+                      label: 'Preferences',
+                      leadingIcon: Icons.tune_rounded,
+                      expand: false,
                       onPressed: () => go('preferences'),
-                      child: const Text('Preferences'),
                     ),
                     SplitPrimaryButton(
                       label: 'Cart ($cartCount)',
@@ -4611,9 +6368,65 @@ class _DemoState extends State<Demo> {
             ),
           ),
         ),
+        if (_sponsoredEnabled && sponsoredProduct != null)
+          Container(
+            margin: const EdgeInsets.only(bottom: 14),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: SplitColors.isDark(context)
+                    ? [SplitColors.darkTint, SplitColors.darkSecondary]
+                    : [const Color(0xFFEDF4FF), const Color(0xFFF7FAFF)],
+              ),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: SplitColors.isDark(context)
+                    ? SplitColors.darkFrameBorder
+                    : const Color(0xFF9ABCFD),
+              ),
+            ),
+            child: Row(
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: Image.asset(
+                    sponsoredProduct.imageAsset,
+                    width: 64,
+                    height: 64,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, _, _) => Icon(sponsoredProduct.icon),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const SplitBadge('Sponsored · Paid placement disclosure', preview: true),
+                      const SizedBox(height: 6),
+                      Text(
+                        sponsoredProduct.name,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      Text(
+                        '${sponsoredProduct.seller} · ${currencyAmount(sponsoredProduct.priceCents, 'USD')} · Shown when sponsored mode is enabled in Developer Tools.',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                SplitSecondaryButton(
+                  label: 'View',
+                  expand: false,
+                  onPressed: () => _openProductDetail(sponsoredProduct),
+                ),
+              ],
+            ),
+          ),
         SplitTextField(
           label: 'Search Store',
-          hintText: 'Search cookware, lamp, storage, IKEA...',
+          hintText: 'Search kettle, lamp, dinnerware, purifiers, IKEA...',
           controller: storeSearchController,
           prefixIcon: Icons.search_rounded,
           onChanged: (v) => setState(() => storeQuery = v),
@@ -4628,6 +6441,7 @@ class _DemoState extends State<Demo> {
                     padding: const EdgeInsets.only(right: 8),
                     child: ChoiceChip(
                       label: Text(c),
+                      materialTapTargetSize: MaterialTapTargetSize.padded,
                       selected: storeCategory == c,
                       onSelected: (_) => setState(() => storeCategory = c),
                     ),
@@ -4673,51 +6487,63 @@ class _DemoState extends State<Demo> {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          height: 92,
-          width: double.infinity,
-          decoration: BoxDecoration(
-            color: SplitColors.surfaceTint,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Icon(p.icon, size: 42, color: SplitColors.primaryInk),
+        InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => _openProductDetail(p),
+          child: _productMediaBox(p),
         ),
         const SizedBox(height: 10),
-        SplitBadge(p.seller, preview: !p.demoLinked),
+        Wrap(
+          spacing: 6,
+          runSpacing: 4,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            SplitBadge(
+              p.paypalEligible ? 'Demo Merchant · PayPal' : p.seller,
+              preview: !p.paypalEligible,
+            ),
+            Text(p.category, style: Theme.of(context).textTheme.bodySmall),
+          ],
+        ),
         const SizedBox(height: 8),
-        Text(p.name, style: Theme.of(context).textTheme.titleMedium),
+        Text(
+          p.name,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
         const SizedBox(height: 4),
         Text(
-          centsStr(p.priceCents),
-          style: const TextStyle(
+          p.description,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 6),
+        Text(
+          p.availability,
+          style: TextStyle(fontSize: 12, color: SplitColors.mutedInk(context)),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          currencyAmount(p.priceCents, 'USD'),
+          style: TextStyle(
             fontWeight: FontWeight.w800,
-            color: SplitColors.primaryInk,
+            color: SplitColors.linkInk(context),
             fontSize: 16,
+            fontFeatures: const [FontFeature.tabularFigures()],
           ),
         ),
         const SizedBox(height: 10),
         twoButtons(
           SplitSecondaryButton(
             label: 'View',
-            onPressed: () => setState(() {
-              activeProduct = p;
-              page = 'product';
-            }),
+            onPressed: () => _openProductDetail(p),
           ),
           SplitPrimaryButton(
             label: 'Add',
             trailingIcon: Icons.add_rounded,
-            onPressed: () {
-              setState(() {
-                final row = cart.where((c) => c.product.id == p.id).firstOrNull;
-                if (row != null) {
-                  row.qty++;
-                } else {
-                  cart.add(CartEntry(product: p));
-                }
-              });
-              showFeedback('${p.name} added to cart');
-            },
+            onPressed: () => _addToCart(p),
           ),
         ),
       ],
@@ -4729,23 +6555,25 @@ class _DemoState extends State<Demo> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
-          height: 92,
+          height: 136,
           width: double.infinity,
           decoration: BoxDecoration(
-            color: const Color(0xFFEEF2F7),
+            color: SplitColors.secondaryCard(context),
             borderRadius: BorderRadius.circular(12),
           ),
-          child: const Icon(
+          child: Icon(
             Icons.storefront_outlined,
-            size: 42,
-            color: SplitColors.navy,
+            size: 46,
+            color: SplitColors.ink(context),
           ),
         ),
         const SizedBox(height: 10),
         const SplitBadge('External retailer', preview: true),
         const SizedBox(height: 8),
         Text(r.name, style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 6),
+        const SizedBox(height: 4),
+        Text(r.description, style: Theme.of(context).textTheme.bodySmall),
+        const SizedBox(height: 10),
         SplitSecondaryButton(
           label: 'Open retailer',
           leadingIcon: Icons.open_in_new_rounded,
@@ -4755,53 +6583,169 @@ class _DemoState extends State<Demo> {
     ),
   );
 
-  Widget productScreen() => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      SplitScreenHeader(
-        title: activeProduct.name,
-        subtitle: activeProduct.seller,
-        onBack: () => go('store'),
-      ),
-      SplitCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Center(
-              child: Icon(
-                activeProduct.icon,
-                size: 68,
-                color: SplitColors.primaryInk,
-              ),
+  Widget _stickyProductBar(StoreProduct p) => Material(
+    color: SplitColors.card(context),
+    elevation: 6,
+    child: SafeArea(
+      top: false,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(18, 10, 18, 12),
+        decoration: BoxDecoration(
+          border: Border(top: BorderSide(color: SplitColors.lineColor(context))),
+        ),
+        child: Center(
+          heightFactor: 1,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        currencyAmount(p.priceCents * _productDetailQty, 'USD'),
+                        style: TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 16,
+                          color: SplitColors.ink(context),
+                          fontFeatures: const [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                      Text(
+                        '$_productDetailQty × ${currencyAmount(p.priceCents, 'USD')}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  flex: 2,
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    alignment: WrapAlignment.end,
+                    children: [
+                      SplitSecondaryButton(
+                        label: 'Add to Cart',
+                        leadingIcon: Icons.shopping_cart_outlined,
+                        expand: false,
+                        onPressed: () =>
+                            _addToCart(p, qty: _productDetailQty, openCart: true),
+                      ),
+                      SplitPrimaryButton(
+                        label: 'Buy now',
+                        trailingIcon: Icons.arrow_forward_rounded,
+                        expand: false,
+                        onPressed: () =>
+                            _startDirectProductCheckout(p, _productDetailQty),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 12),
-            Text(
-              '${centsStr(activeProduct.priceCents)} USD',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-            const SizedBox(height: 6),
-            Text(activeProduct.description),
-            const SizedBox(height: 14),
-            SplitPrimaryButton(
-              label: 'Add to shared purchase',
-              leadingIcon: Icons.shopping_cart_outlined,
-              onPressed: () => setState(() {
-                final row = cart
-                    .where((c) => c.product.id == activeProduct.id)
-                    .firstOrNull;
-                if (row != null) {
-                  row.qty++;
-                } else {
-                  cart.add(CartEntry(product: activeProduct));
-                }
-                page = 'cart';
-              }),
-            ),
-          ],
+          ),
         ),
       ),
-    ],
+    ),
   );
+
+  Widget productScreen() {
+    final p = activeProduct;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SplitScreenHeader(
+          title: p.name,
+          subtitle: '${p.seller} · ${p.availability}',
+          onBack: goBack,
+          trailing: SplitBadge(
+            p.paypalEligible ? 'PayPal Sandbox eligible' : 'Sample fixture',
+            preview: !p.paypalEligible,
+          ),
+        ),
+        SplitCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _productMediaBox(p, height: 220, radius: 14),
+              const SizedBox(height: 14),
+              Text(
+                currencyAmount(p.priceCents, 'USD'),
+                style: Theme.of(context).textTheme.headlineMedium,
+              ),
+              const SizedBox(height: 8),
+              Text(p.description),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Quantity',
+                          style: TextStyle(fontWeight: FontWeight.w800, color: SplitColors.ink(context)),
+                        ),
+                        Text(
+                          'Line subtotal: ${currencyAmount(p.priceCents * _productDetailQty, 'USD')}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    decoration: BoxDecoration(
+                      color: SplitColors.card(context),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: SplitColors.lineColor(context), width: 1.5),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: 'Decrease quantity',
+                          constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+                          onPressed: () => setState(
+                            () => _productDetailQty = (_productDetailQty - 1).clamp(1, 20),
+                          ),
+                          icon: const Icon(Icons.remove_rounded),
+                        ),
+                        SizedBox(
+                          width: 34,
+                          child: Text(
+                            '$_productDetailQty',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Increase quantity',
+                          constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+                          onPressed: () => setState(
+                            () => _productDetailQty = (_productDetailQty + 1).clamp(1, 20),
+                          ),
+                          icon: const Icon(Icons.add_rounded),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              if (!p.paypalEligible) ...[
+                const SizedBox(height: 12),
+                SplitCallout(
+                  message:
+                      'Sample catalog item (${p.seller}). Add to Cart to build a Demo fixture order or split with roommates. PayPal Sandbox Orders v2 checkout applies only to Demo Merchant SS-001.',
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
 
   Widget cartScreen() {
     final totalCents = cart.fold(0, (s, c) => s + c.product.priceCents * c.qty);
@@ -4809,14 +6753,16 @@ class _DemoState extends State<Demo> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SplitScreenHeader(
-          title: 'Shared cart ($cartCount)',
-          onBack: () => go('store'),
+          title: 'Cart ($cartCount)',
+          subtitle: 'Adjust quantities, split, or review checkout',
+          onBack: goBack,
+          trailing: const SplitBadge('Demo fixtures', preview: true),
         ),
         SplitCard(
           child: cart.isEmpty
               ? Column(
                   children: [
-                    const Text('Your shared cart is empty.'),
+                    const Text('Your cart is empty.'),
                     const SizedBox(height: 12),
                     SplitPrimaryButton(
                       label: 'Browse Store',
@@ -4827,15 +6773,88 @@ class _DemoState extends State<Demo> {
               : Column(
                   children: [
                     ...cart.map(
-                      (c) => lineRow(
-                        '${c.product.name} × ${c.qty}',
-                        centsStr(c.product.priceCents * c.qty),
+                      (c) => Container(
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        decoration: BoxDecoration(
+                          border: Border(
+                            bottom: BorderSide(
+                              color: SplitColors.lineColor(context),
+                            ),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 46,
+                              height: 46,
+                              padding: const EdgeInsets.all(3),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Image.asset(
+                                c.product.imageAsset,
+                                fit: BoxFit.contain,
+                                errorBuilder: (_, _, _) => Icon(
+                                  c.product.icon,
+                                  color: SplitColors.primaryInk,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    c.product.name,
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w800,
+                                      color: SplitColors.ink(context),
+                                    ),
+                                  ),
+                                  Text(
+                                    '${currencyAmount(c.product.priceCents * c.qty, 'USD')} · ${c.product.seller}',
+                                    style: Theme.of(context).textTheme.bodySmall,
+                                  ),
+                                ],
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: 'Decrease ${c.product.name}',
+                              constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+                              onPressed: () => setState(() {
+                                if (c.qty > 1) {
+                                  c.qty--;
+                                } else {
+                                  cart.remove(c);
+                                }
+                              }),
+                              icon: const Icon(Icons.remove_circle_outline_rounded),
+                            ),
+                            Text('${c.qty}', style: const TextStyle(fontWeight: FontWeight.w800)),
+                            IconButton(
+                              tooltip: 'Increase ${c.product.name}',
+                              constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+                              onPressed: () => setState(() {
+                                c.qty = (c.qty + 1).clamp(1, 20);
+                              }),
+                              icon: const Icon(Icons.add_circle_outline_rounded),
+                            ),
+                            IconButton(
+                              tooltip: 'Remove ${c.product.name}',
+                              constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+                              onPressed: () => setState(() => cart.remove(c)),
+                              icon: const Icon(Icons.delete_outline_rounded, color: SplitColors.error),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                    const Divider(height: 20, color: SplitColors.line),
+                    const SizedBox(height: 10),
                     lineRow(
                       'Subtotal',
-                      '${centsStr(totalCents)} USD',
+                      currencyAmount(totalCents, 'USD'),
                       bold: true,
                     ),
                     const SizedBox(height: 12),
@@ -4845,72 +6864,202 @@ class _DemoState extends State<Demo> {
                         onPressed: () => setState(cart.clear),
                       ),
                       SplitPrimaryButton(
-                        label: 'Split this purchase',
-                        onPressed: () {
-                          final each = equalShare(totalCents, 3, 'USD');
-                          setState(() {
-                            billRawPng = null;
-                            billDraft = ExtractedBillDraft(
-                              merchant: 'splitStore Shared Cart',
-                              date: dateLabel(DateTime.now()),
-                              items: cart
-                                  .map(
-                                    (c) => BillLineItem(
-                                      name: '${c.product.name} x${c.qty}',
-                                      amountCents: c.product.priceCents * c.qty,
-                                    ),
-                                  )
-                                  .toList(),
-                              totalCents: totalCents,
-                              modelUsed: 'Store Cart',
-                            );
-                            billMerchantController.text = billDraft.merchant;
-                            billTotalController.text = (totalCents / 100)
-                                .toStringAsFixed(2);
-                            recipientDrafts = [
-                              RecipientDraft(
-                                name: 'Maya',
-                                contactId: 'maya',
-                                known: true,
-                                amountCents: each,
-                                reason: cart.first.product.name,
-                              ),
-                              RecipientDraft(
-                                name: 'Arun',
-                                contactId: 'arun',
-                                known: true,
-                                amountCents: each,
-                                reason: cart.first.product.name,
-                              ),
-                              RecipientDraft(
-                                name: 'Leah',
-                                contactId: 'leah',
-                                known: true,
-                                amountCents: totalCents - each * 2,
-                                reason: cart.first.product.name,
-                              ),
-                            ];
-                            requestKind = 'store';
-                            requestAttemptId = null;
-                            receiptAttached = true;
-                            askSend = false;
-                            sendReady = false;
-                            askMessages
-                              ..clear()
-                              ..add((
-                                user: false,
-                                text: 'Review the shared cart split below.',
-                              ));
-                            page = 'talk';
-                          });
-                        },
+                        label: 'Checkout review',
+                        onPressed: () => go('checkout-review'),
                       ),
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                    ),
+                    const SizedBox(height: 8),
+                    SplitSecondaryButton(
+                      label: 'Split this purchase',
+                      leadingIcon: Icons.auto_awesome_outlined,
+                      onPressed: () {
+                        final each = equalShare(totalCents, 3, 'USD');
+                        setState(() {
+                          billRawPng = null;
+                          billDraft = ExtractedBillDraft(
+                            merchant: 'AI Store Shared Cart',
+                            date: dateLabel(DateTime.now()),
+                            items: cart
+                                .map(
+                                  (c) => BillLineItem(
+                                    name: '${c.product.name} x${c.qty}',
+                                    amountCents: c.product.priceCents * c.qty,
+                                  ),
+                                )
+                                .toList(),
+                            totalCents: totalCents,
+                            modelUsed: 'Store Cart',
+                          );
+                          billMerchantController.text = billDraft.merchant;
+                          billTotalController.text = (totalCents / 100)
+                              .toStringAsFixed(2);
+                          recipientDrafts = [
+                            RecipientDraft(
+                              name: 'Maya',
+                              contactId: 'maya',
+                              known: true,
+                              amountCents: each,
+                              reason: cart.first.product.name,
+                            ),
+                            RecipientDraft(
+                              name: 'Arun',
+                              contactId: 'arun',
+                              known: true,
+                              amountCents: each,
+                              reason: cart.first.product.name,
+                            ),
+                            RecipientDraft(
+                              name: 'Leah',
+                              contactId: 'leah',
+                              known: true,
+                              amountCents: totalCents - each * 2,
+                              reason: cart.first.product.name,
+                            ),
+                          ];
+                          requestKind = 'store';
+                          requestAttemptId = null;
+                          receiptAttached = true;
+                          askSend = false;
+                          sendReady = false;
+                          askMessages
+                            ..clear()
+                            ..add((
+                              user: false,
+                              text: 'Review the shared cart split below.',
+                            ));
+                        });
+                        go('talk');
+                      },
                     ),
                   ],
                 ),
         ),
       ],
     );
+  }
+
+  Widget checkoutReviewScreen() {
+    if (cart.isEmpty) return cartScreen();
+    final totalCents = cart.fold(0, (s, c) => s + c.product.priceCents * c.qty);
+    final paypalEligibleOnly = cart.every((c) => c.product.paypalEligible);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SplitScreenHeader(
+          title: 'Checkout review',
+          subtitle: 'Verify merchant scope before paying',
+          onBack: goBack,
+          trailing: SplitBadge(
+            paypalEligibleOnly ? 'PayPal Sandbox + Store' : 'Demo fixture',
+            preview: !paypalEligibleOnly,
+          ),
+        ),
+        SplitCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ...cart.map(
+                (c) => lineRow(
+                  '${c.product.name} × ${c.qty} (${c.product.seller})',
+                  currencyAmount(c.product.priceCents * c.qty, 'USD'),
+                ),
+              ),
+              Divider(height: 20, color: SplitColors.lineColor(context)),
+              lineRow('Total', currencyAmount(totalCents, 'USD'), bold: true),
+              const SizedBox(height: 12),
+              _paymentSourceBlock(totalCents),
+              const SizedBox(height: 10),
+              SplitCallout(
+                message: paypalEligibleOnly
+                    ? 'Demo Merchant direct purchase records a Store receipt immediately. On the receipt screen you can tap Split cash to divide the cost, or use Scan & Pay (#purchase/SS-001) for the 3-way PayPal Sandbox checkout.'
+                    : 'Sample fixture order records a Demo Store receipt in Activity. On the receipt screen you can tap Split cash to request roommates’ shares.',
+              ),
+              const SizedBox(height: 14),
+              twoButtons(
+                SplitSecondaryButton(
+                  label: 'Back to Cart',
+                  onPressed: _checkoutBusy ? null : goBack,
+                ),
+                SplitPrimaryButton(
+                  label: _checkoutBusy
+                      ? 'Recording purchase…'
+                      : 'Complete purchase',
+                  onPressed: _checkoutBusy || !_canFundPayment(totalCents)
+                      ? null
+                      : () => _completeDemoStoreOrder(totalCents),
+                ),
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _completeDemoStoreOrder(int totalCents) async {
+    if (_checkoutBusy || cart.isEmpty) return;
+    if (!_canFundPayment(totalCents)) {
+      showFeedback('PayPal Wallet balance too low. Recharge or switch card.');
+      return;
+    }
+    final fundingLabel = paymentSource == 'wallet'
+        ? 'PayPal Wallet'
+        : 'PayPal Cashback •••• 9104';
+    setState(() => _checkoutBusy = true);
+    final clientTxId = 'store-${demoId()}';
+    final desc = cart.map((c) => '${c.product.name} ×${c.qty}').join(', ');
+    try {
+      final tx = connected
+          ? Map<String, dynamic>.from(
+              (await backend(
+                    '/api/organizer/demo-pay',
+                    body: {
+                      'type': 'store-demo',
+                      'recipientName': 'AI Store (Demo)',
+                      'sourceAmountCents': totalCents,
+                      'sourceCurrency': 'USD',
+                      'targetCurrency': 'USD',
+                      'fundingSource': fundingLabel,
+                      'note': desc,
+                      'clientTxId': clientTxId,
+                    },
+                  ))['transaction']
+                  as Map,
+            )
+          : {
+              'id': 'DTX-${clientTxId.substring(6, 12).toUpperCase()}',
+              'clientTxId': clientTxId,
+              'type': 'store-demo',
+              'direction': 'outgoing',
+              'recipientName': 'AI Store (Demo)',
+              'sourceAmountCents': totalCents,
+              'sourceCurrency': 'USD',
+              'targetAmountCents': totalCents,
+              'targetCurrency': 'USD',
+              'fundingSource': fundingLabel,
+              'note': desc,
+              'status': 'Completed',
+              'demo': true,
+              'createdAt': _now().toIso8601String(),
+            };
+      if (!mounted) return;
+      setState(() {
+        _deductWalletIfSelected(totalCents);
+        tx['fundingSource'] ??= fundingLabel;
+        demoTransfers = [tx, ...demoTransfers];
+        activeTransfer = tx;
+        cart.clear();
+      });
+      await saveLocalDemo();
+      showFeedback('Demo store receipt recorded: ${currencyAmount(totalCents, 'USD')}');
+      go('transfer-receipt', replace: true);
+    } catch (e) {
+      if (mounted) showFeedback('Could not place demo order: $e');
+    } finally {
+      if (mounted) setState(() => _checkoutBusy = false);
+    }
   }
 
   Widget preferencesScreen() => Column(
@@ -4935,6 +7084,7 @@ class _DemoState extends State<Demo> {
             twoButtons(
               SplitSecondaryButton(label: 'Skip', onPressed: () => go('store')),
               SplitPrimaryButton(label: 'Save', onPressed: () => go('store')),
+              crossAxisAlignment: CrossAxisAlignment.stretch,
             ),
           ],
         ),
@@ -4975,102 +7125,145 @@ class _DemoState extends State<Demo> {
     });
   }
 
-  Widget rentScreen() => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      SplitScreenHeader(
-        title: 'Rent',
-        subtitle: 'Household requests · Practice mode',
-        onBack: () => go('home'),
-      ),
-      SplitCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (!rentCreating)
-              SplitPrimaryButton(
-                label: 'Create rent request',
-                onPressed: () => setState(() => rentCreating = true),
-              )
-            else ...[
-              if (savedRentRule != null)
-                TextButton(
-                  onPressed: applyRentRule,
-                  child: const Text('Use saved split rule'),
+  void openHouseholdBill(String kind) {
+    _elecProviderController.clear();
+    resetRent();
+    go(kind);
+  }
+
+  Widget householdBillScreen(String kind) {
+    final isElec = kind == 'electricity';
+    final label = isElec ? 'Electricity' : 'Rent';
+    final rule = isElec ? savedElecRule : savedRentRule;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SplitScreenHeader(
+          title: label,
+          subtitle: 'Create and track shared ${label.toLowerCase()} requests',
+          onBack: goBack,
+          trailing: const SplitBadge('Demo mode', preview: true),
+        ),
+        SplitCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (!rentCreating) ...[
+                Text(
+                  'No active ${label.toLowerCase()} bill',
+                  style: Theme.of(context).textTheme.titleLarge,
                 ),
-              SplitTextField(label: 'Total rent', controller: amountController),
-              currencyPicker(
-                'Currency',
-                paymentCurrency,
-                (currency) => setState(() => paymentCurrency = currency),
-              ),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.calendar_today),
-                title: Text(
-                  rentDue == null ? 'Choose due date' : dateLabel(rentDue!),
+                const SizedBox(height: 6),
+                Text(
+                  'Starts blank. Select household contacts, enter total ${label.toLowerCase()} amount and due date, and create requests.',
                 ),
-                onTap: () async {
-                  final now = DateTime.now();
-                  final date = await showDatePicker(
-                    context: context,
-                    firstDate: now,
-                    lastDate: now.add(const Duration(days: 730)),
-                    initialDate: rentDue ?? now,
-                  );
-                  if (mounted && date != null) setState(() => rentDue = date);
-                },
-              ),
-              const Text('Household contacts'),
-              for (final c in contacts.where((c) => c.id != 'leah'))
+                const SizedBox(height: 12),
+                SplitPrimaryButton(
+                  label: 'Create ${label.toLowerCase()} request',
+                  onPressed: () => setState(() => rentCreating = true),
+                ),
+              ] else ...[
+                if (rule != null)
+                  TextButton(
+                    onPressed: applyRentRule,
+                    child: const Text('Use saved split rule'),
+                  ),
+                if (isElec) ...[
+                  SplitTextField(
+                    label: 'Electric utility / meter note (optional)',
+                    hintText: 'e.g. City Power · Apt 4B',
+                    controller: _elecProviderController,
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                SplitTextField(
+                  label: '$label amount ($paymentCurrency)',
+                  keyboardType: TextInputType.numberWithOptions(
+                    decimal: paymentCurrency != 'JPY',
+                  ),
+                  controller: amountController,
+                ),
+                const SizedBox(height: 12),
+                currencyPicker(
+                  'Currency',
+                  paymentCurrency,
+                  (currency) => setState(() => paymentCurrency = currency),
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.calendar_today),
+                  title: Text(
+                    rentDue == null ? 'Choose due date' : dateLabel(rentDue!),
+                  ),
+                  onTap: () async {
+                    final now = DateTime.now();
+                    final date = await showDatePicker(
+                      context: context,
+                      firstDate: now,
+                      lastDate: now.add(const Duration(days: 730)),
+                      initialDate: rentDue ?? now,
+                    );
+                    if (mounted && date != null) setState(() => rentDue = date);
+                  },
+                ),
+                const Text('Household contacts'),
+                for (final c in contacts.where((c) => c.id != 'leah'))
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    secondary: SplitContactAvatar(
+                      name: c.name,
+                      id: c.id,
+                      currency: c.currency,
+                      size: 32,
+                    ),
+                    title: Text('${c.name} · ${c.currency}'),
+                    value: rentContacts.contains(c.id),
+                    onChanged: (checked) => setState(() {
+                      if (checked == true) {
+                        rentContacts.add(c.id);
+                      } else {
+                        rentContacts.remove(c.id);
+                      }
+                    }),
+                  ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Custom shares'),
+                  value: rentCustom,
+                  onChanged: (value) => setState(() => rentCustom = value),
+                ),
+                if (rentCustom)
+                  for (final c in contacts.where(
+                    (c) => rentContacts.contains(c.id),
+                  ))
+                    SplitTextField(
+                      label: '${c.name}’s share',
+                      controller: rentShares.putIfAbsent(
+                        c.id,
+                        TextEditingController.new,
+                      ),
+                    ),
                 CheckboxListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: Text('${c.flag} ${c.name}'),
-                  value: rentContacts.contains(c.id),
-                  onChanged: (checked) => setState(() {
-                    if (checked == true) {
-                      rentContacts.add(c.id);
-                    } else {
-                      rentContacts.remove(c.id);
-                    }
-                  }),
+                  title: const Text('Save rule for future months'),
+                  value: rememberRent,
+                  onChanged: (value) =>
+                      setState(() => rememberRent = value == true),
                 ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Custom shares'),
-                value: rentCustom,
-                onChanged: (value) => setState(() => rentCustom = value),
-              ),
-              if (rentCustom)
-                for (final c in contacts.where(
-                  (c) => rentContacts.contains(c.id),
-                ))
-                  SplitTextField(
-                    label: '${c.name}’s share',
-                    controller: rentShares.putIfAbsent(
-                      c.id,
-                      TextEditingController.new,
-                    ),
-                  ),
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Save rule for future months'),
-                value: rememberRent,
-                onChanged: (value) =>
-                    setState(() => rememberRent = value == true),
-              ),
-              SplitPrimaryButton(
-                label: 'Review rent requests',
-                onPressed: submitRentDraft,
-              ),
+                SplitPrimaryButton(
+                  label: 'Review ${label.toLowerCase()} requests',
+                  onPressed: () => submitHouseholdBill(kind),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
-      ),
-    ],
-  );
+      ],
+    );
+  }
 
-  Future<void> submitRentDraft() async {
+  Future<void> submitHouseholdBill(String kind) async {
+    final isElec = kind == 'electricity';
     final due = rentDue;
     final total = inputCents(amountController.text, paymentCurrency);
     final selected = contacts
@@ -5091,10 +7284,17 @@ class _DemoState extends State<Demo> {
     };
     if (shares.values.any((value) => value <= 0) ||
         shares.values.fold(0, (a, b) => a + b) > total) {
-      showFeedback('Enter positive shares that do not exceed the rent total.');
+      showFeedback('Enter positive shares that do not exceed the bill total.');
       return;
     }
-    prepareRequests('Rent · ${dateLabel(due)}', 'rent', paymentCurrency, [
+    final prov = _elecProviderController.text.trim();
+    final title = isElec
+        ? '${prov.isEmpty ? 'Electricity bill' : prov} due ${dateLabel(due)}'
+        : 'Rent due ${dateLabel(due)}';
+    final reason = isElec
+        ? '${prov.isEmpty ? 'Electricity' : prov} (${dateLabel(due)})'
+        : 'Rent due ${dateLabel(due)}';
+    prepareRequests(title, kind, paymentCurrency, [
       for (final c in selected)
         RecipientDraft(
           name: c.name,
@@ -5102,7 +7302,7 @@ class _DemoState extends State<Demo> {
           known: true,
           amountCents: shares[c.id]!,
           currency: paymentCurrency,
-          reason: 'Rent due ${dateLabel(due)}',
+          reason: reason,
         ),
     ], total: total);
     await reviewRequests();
@@ -5116,43 +7316,364 @@ class _DemoState extends State<Demo> {
       'dayOfMonth': due.day,
     };
     try {
-      if (connected) await backend('/api/organizer/rent-rule', body: rule);
-      savedRentRule = rule;
+      if (isElec) {
+        savedElecRule = rule;
+      } else {
+        if (connected) await backend('/api/organizer/rent-rule', body: rule);
+        savedRentRule = rule;
+      }
       if (!connected) await saveLocalDemo();
     } catch (_) {
       if (mounted) {
         showFeedback(
-          'Requests were created, but the rent rule could not be saved.',
+          'Requests were created, but the ${isElec ? 'electricity' : 'rent'} rule could not be saved.',
         );
       }
     }
   }
 
+  String get _receiveQrLink {
+    final amtCents = inputCents(receiveAmountController.text, receiveQrCurrency);
+    final query = <String, String>{
+      'currency': receiveQrCurrency,
+      if (amtCents > 0)
+        'amount': formatMajorInput(amtCents, receiveQrCurrency),
+    };
+    final frag = Uri(path: 'receive/leah', queryParameters: query).toString();
+    return '$_origin/#$frag';
+  }
+
   Widget profileScreen() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      Padding(
-        padding: const EdgeInsets.only(bottom: 14),
-        child: Row(
+      SplitScreenHeader(
+        title: 'Profile & Settings',
+        subtitle: 'Receive QR, theme, quick help FAQs, and contacts.',
+        onBack: goBack,
+        trailing: SplitBadge(
+          connected ? 'Connected Sandbox' : 'Preview mode',
+          preview: !connected,
+        ),
+      ),
+      twoPane(
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Expanded(
+            SplitCard(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Profile & Settings',
-                    style: Theme.of(context).textTheme.headlineMedium,
+                    'Appearance',
+                    style: Theme.of(context).textTheme.titleLarge,
                   ),
-                  const Text('Manage your contacts and practice session.'),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Medfarm Light & Dark palette',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: SegmentedButton<ThemeMode>(
+                      showSelectedIcon: false,
+                      style: const ButtonStyle(
+                        visualDensity: VisualDensity.compact,
+                        padding: WidgetStatePropertyAll(
+                          EdgeInsets.symmetric(horizontal: 6, vertical: 10),
+                        ),
+                      ),
+                      segments: [
+                        ButtonSegment(
+                          value: ThemeMode.system,
+                          icon: const Icon(Icons.brightness_auto_rounded, size: 15),
+                          label: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: const Text('System', maxLines: 1),
+                          ),
+                        ),
+                        ButtonSegment(
+                          value: ThemeMode.light,
+                          icon: const Icon(Icons.light_mode_rounded, size: 15),
+                          label: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: const Text('Light', maxLines: 1),
+                          ),
+                        ),
+                        ButtonSegment(
+                          value: ThemeMode.dark,
+                          icon: const Icon(Icons.dark_mode_rounded, size: 15),
+                          label: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: const Text('Dark', maxLines: 1),
+                          ),
+                        ),
+                      ],
+                      selected: {widget.themeMode},
+                      onSelectionChanged: (selection) =>
+                          widget.onThemeModeChanged?.call(selection.first),
+                    ),
+                  ),
                 ],
               ),
             ),
-            SplitBadge(
-              connected ? 'Connected Sandbox' : 'Preview mode',
-              preview: !connected,
+            SplitCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Organizer Sandbox Session',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  const SizedBox(height: 8),
+                  if (connected) ...[
+                    Text(
+                      'Linked automatically via server .env organizer session.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 10),
+                    SplitSecondaryButton(
+                      label: 'Sign out',
+                      onPressed: signOutOrganizer,
+                    ),
+                  ] else
+                    twoButtons(
+                      SplitPrimaryButton(
+                        label: 'Auto-connect .env',
+                        trailingIcon: Icons.bolt_rounded,
+                        onPressed: () =>
+                            unawaited(restoreOrganizerConnection(interactive: true)),
+                      ),
+                      SplitSecondaryButton(
+                        label: 'Organizer key',
+                        leadingIcon: Icons.vpn_key_outlined,
+                        onPressed: () => go('welcome'),
+                      ),
+                      minSideBySideWidth: 360,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                    ),
+                  Divider(height: 22, color: SplitColors.lineColor(context)),
+                  lineRow(
+                    'AI Extract & Split',
+                    aiConfigured ? 'Configured' : 'Preview/Manual',
+                  ),
+                  lineRow(
+                    'Chatterbox TTS',
+                    aiConfigured ? 'Configured' : 'Unavailable',
+                  ),
+                  lineRow(
+                    'PayPal Sandbox (SS-001)',
+                    paypalConfigured ? 'Configured' : 'Unconfigured',
+                  ),
+                  lineRow(
+                    'Email / SMS Delivery',
+                    deliveryConfigured ? 'Configured' : 'Manual link/QR',
+                  ),
+                  Divider(height: 22, color: SplitColors.lineColor(context)),
+                  twoButtons(
+                    SplitSecondaryButton(
+                      key: const Key('lock-app-btn'),
+                      label: 'Lock wallet',
+                      leadingIcon: Icons.lock_outline_rounded,
+                      onPressed: () {
+                        Navigator.of(context).popUntil((r) => r.isFirst);
+                        setState(() => _unlocked = false);
+                      },
+                    ),
+                    SplitSecondaryButton(
+                      label: 'Developer Tools',
+                      leadingIcon: Icons.tune_rounded,
+                      onPressed: () => go('dev'),
+                    ),
+                    minSideBySideWidth: 360,
+                  ),
+                ],
+              ),
             ),
           ],
         ),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SplitCard(
+              key: const Key('profile-receive-qr-card'),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Receive Money QR',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Center(
+                    child: Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: SplitColors.lineColor(context)),
+                      ),
+                      child: QrImageView(
+                        data: _receiveQrLink,
+                        size: 220,
+                        backgroundColor: Colors.white,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: SplitColors.tint(context),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(color: SplitColors.lineColor(context)),
+                    ),
+                    child: Text(
+                      'leah@paypal',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 15,
+                        color: SplitColors.ink(context),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            SplitCard(
+              key: const Key('profile-help-faq-card'),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Help & FAQs',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Quick answers for Wallet, QR, and splitting bills.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 8),
+                  for (final faq in const [
+                    (
+                      q: 'How do I add funds with Recharge Wallet?',
+                      a: 'Tap + Recharge on the Home PayPal Wallet card (or when prompted during payment) and pick a preset amount or enter a custom USD value.',
+                    ),
+                    (
+                      q: 'How does Split cash work after buying from Store?',
+                      a: 'Complete your direct purchase using PayPal Wallet or your linked card. On the receipt screen, tap Split cash to divide the order with friends.',
+                    ),
+                    (
+                      q: 'How do friends pay me with leah@paypal QR?',
+                      a: 'Friends scan your Receive Money QR in Scan & Pay to pre-fill Leah and open a demo FX payment.',
+                    ),
+                    (
+                      q: 'What is the difference between Wallet and Sandbox SS-001?',
+                      a: 'Wallet and contact transfers run in Demo mode for instant walkthroughs, while SS-001 uses the real PayPal Sandbox approval and capture flow.',
+                    ),
+                  ])
+                    ExpansionTile(
+                      tilePadding: EdgeInsets.zero,
+                      childrenPadding: const EdgeInsets.only(bottom: 10),
+                      title: Text(
+                        faq.q,
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 14,
+                          color: SplitColors.ink(context),
+                        ),
+                      ),
+                      children: [
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            faq.a,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      ],
+                    ),
+                  const SizedBox(height: 8),
+                  SplitSecondaryButton(
+                    label: 'Contact PayPal AI Support',
+                    leadingIcon: Icons.support_agent_rounded,
+                    onPressed: () => go('contact-paypal'),
+                  ),
+                ],
+              ),
+            ),
+            SplitCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Contacts (${contacts.length})',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  ...contacts.map(
+                    (c) => paymentTile(
+                      name: c.name,
+                      leading: SplitContactAvatar(
+                        name: c.name,
+                        id: c.id,
+                        currency: c.currency,
+                      ),
+                      detail: [
+                        c.country,
+                        c.currency,
+                      ].where((value) => value.isNotEmpty).join(' · '),
+                    ),
+                  ),
+                  Divider(height: 18, color: SplitColors.lineColor(context)),
+                  SplitTextField(
+                    label: 'Add contact name',
+                    hintText: 'e.g. Priya',
+                    controller: newContactNameController,
+                  ),
+                  const SizedBox(height: 8),
+                  SplitSecondaryButton(
+                    label: 'Add contact',
+                    onPressed: () async {
+                      final name = newContactNameController.text.trim();
+                      if (name.isEmpty) return;
+                      if (connected) {
+                        await backend(
+                          '/api/organizer/contacts',
+                          body: {'name': name},
+                        );
+                      }
+                      setState(() {
+                        contacts.add(
+                          SplitContact(id: name.toLowerCase(), name: name),
+                        );
+                        newContactNameController.clear();
+                      });
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    ],
+  );
+
+  Widget devToolsScreen() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      SplitScreenHeader(
+        title: 'Developer Tools',
+        subtitle: 'Internal Storefront preview toggles and presenter session reset',
+        onBack: goBack,
+        trailing: const SplitBadge('Dev', preview: true),
       ),
       twoPane(
         SplitCard(
@@ -5160,36 +7681,27 @@ class _DemoState extends State<Demo> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Organizer Sandbox Session',
+                'Storefront sponsored placement preview',
                 style: Theme.of(context).textTheme.titleLarge,
               ),
-              const SizedBox(height: 8),
-              if (connected)
-                SplitSecondaryButton(
-                  label: 'Sign out',
-                  onPressed: signOutOrganizer,
-                )
-              else
-                SplitPrimaryButton(
-                  label: 'Sign in with organizer key',
-                  onPressed: () => go('welcome'),
-                ),
-              const Divider(height: 22, color: SplitColors.line),
-              lineRow(
-                'AI Extract & Split',
-                aiConfigured ? 'Configured' : 'Preview/Manual',
+              const SizedBox(height: 6),
+              const Text(
+                'Sponsored placement is hidden on the Storefront by default. Toggle here to verify paid placement disclosure.',
               ),
-              lineRow(
-                'Chatterbox TTS',
-                aiConfigured ? 'Configured' : 'Unavailable',
-              ),
-              lineRow(
-                'PayPal Sandbox (SS-001)',
-                paypalConfigured ? 'Configured' : 'Unconfigured',
-              ),
-              lineRow(
-                'Email / SMS Delivery',
-                deliveryConfigured ? 'Configured' : 'Manual link/QR',
+              const SizedBox(height: 12),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Show sponsored card in Store'),
+                subtitle: Text(_sponsoredEnabled ? 'Visible (with disclosure)' : 'Hidden (default)'),
+                value: _sponsoredEnabled,
+                onChanged: (v) {
+                  setState(() => _sponsoredEnabled = v);
+                  showFeedback(
+                    v
+                        ? 'Sponsored placement visible in Store with disclosure.'
+                        : 'Sponsored placement hidden (default).',
+                  );
+                },
               ),
             ],
           ),
@@ -5199,44 +7711,18 @@ class _DemoState extends State<Demo> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Contacts (${contacts.length})',
+                'Demo session & diagnostics',
                 style: Theme.of(context).textTheme.titleLarge,
               ),
-              ...contacts.map(
-                (c) => paymentTile(
-                  name: c.name,
-                  leading: participantAvatar(c.name),
-                  detail: [
-                    '${c.flag} ${c.country}'.trim(),
-                    c.currency,
-                  ].where((value) => value.isNotEmpty).join(' · '),
-                ),
-              ),
-              const Divider(height: 18, color: SplitColors.line),
-              SplitTextField(
-                label: 'Add contact name',
-                hintText: 'e.g. Priya',
-                controller: newContactNameController,
-              ),
-              const SizedBox(height: 8),
-              SplitSecondaryButton(
-                label: 'Add contact',
-                onPressed: () async {
-                  final name = newContactNameController.text.trim();
-                  if (name.isEmpty) return;
-                  if (connected) {
-                    await backend(
-                      '/api/organizer/contacts',
-                      body: {'name': name},
-                    );
-                  }
-                  setState(() {
-                    contacts.add(
-                      SplitContact(id: name.toLowerCase(), name: name),
-                    );
-                    newContactNameController.clear();
-                  });
-                },
+              const SizedBox(height: 6),
+              const Text('Clear local/server demo activity, transfers, and saved rent/electricity rules cleanly.'),
+              const SizedBox(height: 12),
+              lineRow('Active route stack', _pushedStack.map((e) => e.name).join(' > ').isEmpty ? _tabPages[activeTab] : _pushedStack.map((e) => e.name).join(' > ')),
+              const SizedBox(height: 10),
+              SplitPrimaryButton(
+                label: backendBusy ? 'Resetting…' : 'Reset demo session',
+                leadingIcon: Icons.refresh_rounded,
+                onPressed: backendBusy ? null : resetDemoSession,
               ),
             ],
           ),
@@ -5245,206 +7731,598 @@ class _DemoState extends State<Demo> {
     ],
   );
 
-  // ---------- Scaffold & Responsive App Shell ----------
-  Widget currentBody() => switch (page) {
-    'welcome' => welcomeScreen(),
-    'home' => homeScreen(),
-    'activity' => activityScreen(),
-    'store' || 'shop' => storeScreen(),
-    'profile' => profileScreen(),
-    'scan' => scannerScreen(),
-    'scan-error' => scannerScreen(forceError: true),
-    'scan-bill' => scanBillScreen(),
-    'bill-crop' => billCropScreen(),
-    'bill-review' => billReviewScreen(),
-    'talk' => talkScreen(),
-    'send-money' => contactPaymentScreen(send: true),
-    'manual-request' => contactPaymentScreen(send: false),
-    'review-transfer' => transferReviewScreen(),
-    'review-payment-draft' => groupPaymentScreen(),
-    'payment-draft-receipt' => groupReceiptScreen(),
-    'transfer-receipt' => transferReceiptScreen(),
-    'request-detail' => requestDetailScreen(),
-    'reimbursement-payer' => reimbursementPayerScreen(),
-    'review' => reviewScreen(),
-    'split' => splitReviewScreen(),
-    'edit' => splitReviewScreen(edit: true),
-    'clarify' => splitReviewScreen(clarify: true),
-    'requests' || 'qr' => requestsScreen(),
-    'dashboard' || 'status' => statusScreen(),
-    'payer' => payerScreen(),
-    'handoff' => SplitCard(
-      child: Column(
-        children: [
-          Text(
-            'PayPal Sandbox preview',
-            style: Theme.of(context).textTheme.titleLarge,
-          ),
-          const SizedBox(height: 10),
-          ...['processing', 'paid', 'cancelled'].map(
-            (s) => Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: SplitPrimaryButton(
-                label: 'Preview ${s[0].toUpperCase()}${s.substring(1)}',
-                onPressed: () => setState(() {
-                  result = s;
-                  page = 'result';
-                }),
-              ),
+  // ---------- Scaffold & Responsive App Shell (IndexedStack + CupertinoPageRoute + PopScope) ----------
+  Widget currentBody([String? overrideRoute]) {
+    final routeName = overrideRoute ?? page;
+    return switch (routeName) {
+      'welcome' => welcomeScreen(),
+      'home' => homeScreen(),
+      'activity' => activityScreen(),
+      'store' || 'shop' => storeScreen(),
+      'contact-paypal' => contactPaypalScreen(),
+      'profile' => profileScreen(),
+      'dev' => devToolsScreen(),
+      'scan' => scannerScreen(),
+      'scan-error' => scannerScreen(forceError: true),
+      'scan-bill' => scanBillScreen(),
+      'bill-crop' => billCropScreen(),
+      'bill-review' => billReviewScreen(),
+      'talk' => talkScreen(),
+      'send-money' => contactPaymentScreen(send: true),
+      'manual-request' => contactPaymentScreen(send: false),
+      'review-transfer' => transferReviewScreen(),
+      'review-payment-draft' => groupPaymentScreen(),
+      'payment-draft-receipt' => groupReceiptScreen(),
+      'transfer-receipt' => transferReceiptScreen(),
+      'request-detail' => requestDetailScreen(),
+      'reimbursement-payer' => reimbursementPayerScreen(),
+      'review' => reviewScreen(),
+      'split' => splitReviewScreen(),
+      'edit' => splitReviewScreen(edit: true),
+      'clarify' => splitReviewScreen(clarify: true),
+      'requests' || 'qr' => requestsScreen(),
+      'dashboard' || 'status' => statusScreen(),
+      'payer' => payerScreen(),
+      'rent' => householdBillScreen('rent'),
+      'electricity' => householdBillScreen('electricity'),
+      'product' => productScreen(),
+      'cart' => cartScreen(),
+      'checkout-review' => checkoutReviewScreen(),
+      'preferences' => preferencesScreen(),
+      _ => homeScreen(),
+    };
+  }
+
+  Widget _bannerOverlay() {
+    final msg = _inAppBanner;
+    if (msg == null || msg.isEmpty) return const SizedBox.shrink();
+    return Positioned(
+      top: 8,
+      left: 14,
+      right: 14,
+      child: SafeArea(
+        bottom: false,
+        child: Material(
+          color: SplitColors.navy,
+          elevation: 4,
+          borderRadius: BorderRadius.circular(14),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            child: Row(
+              children: [
+                const Icon(Icons.notifications_active_rounded, color: Color(0xFF48B3A9), size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    msg,
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Dismiss alert',
+                  constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+                  onPressed: () => setState(() => _inAppBanner = null),
+                  icon: const Icon(Icons.close_rounded, color: Colors.white, size: 18),
+                ),
+              ],
             ),
           ),
-        ],
+        ),
       ),
-    ),
-    'result' => SplitCard(
-      child: Column(
-        children: [
-          Text(
-            'Result: $result',
-            style: Theme.of(context).textTheme.headlineMedium,
-          ),
-          const SizedBox(height: 12),
-          SplitPrimaryButton(
-            label: 'Back to share',
-            onPressed: () => go('payer'),
-          ),
-        ],
-      ),
-    ),
-    'rent' => rentScreen(),
-    'product' => productScreen(),
-    'cart' => cartScreen(),
-    'preferences' => preferencesScreen(),
-    _ => homeScreen(),
-  };
+    );
+  }
 
-  static const _tabPages = ['home', 'activity', 'store', 'profile'];
-
-  @override
-  Widget build(BuildContext context) {
-    final size = MediaQuery.sizeOf(context);
-    final isLandscape =
-        MediaQuery.orientationOf(context) == Orientation.landscape;
-    final showTabs = _tabPages.contains(page);
-    final useRail =
-        showTabs && (size.width >= 720 || (isLandscape && size.width >= 540));
-    final useBottomNav = showTabs && !useRail;
-    final tabIdx = _tabPages.indexOf(page).clamp(0, 3);
-
-    Widget content = SafeArea(
+  Widget _buildSubRouteBody(BuildContext subCtx, String routeName) {
+    Widget body = SafeArea(
       child: SingleChildScrollView(
-        controller: page == 'talk' ? askScroll : null,
+        controller: routeName == 'talk' ? askScroll : null,
         padding: const EdgeInsets.all(18),
         child: Center(
           child: ConstrainedBox(
             constraints: BoxConstraints(
-              maxWidth: page == 'home' || page == 'talk' ? 680 : 1020,
+              maxWidth: routeName == 'talk' ? 680 : 1020,
             ),
-            child: currentBody(),
+            child: currentBody(routeName),
           ),
         ),
       ),
     );
 
-    if (page == 'talk') {
-      content = Column(
+    if (routeName == 'talk') {
+      body = Column(
         children: [
-          Expanded(child: content),
-          const Divider(height: 1, color: SplitColors.line),
+          Expanded(child: body),
+          Divider(height: 1, color: SplitColors.lineColor(context)),
           talkComposer(),
         ],
       );
     }
 
-    if (page == 'bill-review') {
-      content = Column(
+    if (routeName == 'bill-review') {
+      body = Column(
         children: [
-          Expanded(child: content),
+          Expanded(child: body),
           if (billExtractState != 'loading' &&
-              MediaQuery.viewInsetsOf(context).bottom == 0) ...[
-            const Divider(height: 1, color: SplitColors.line),
+              MediaQuery.viewInsetsOf(subCtx).bottom == 0) ...[
+            Divider(height: 1, color: SplitColors.lineColor(context)),
             receiptReviewAction(),
           ],
         ],
       );
     }
 
-    if (useRail) {
-      content = Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+    if (routeName == 'product') {
+      body = Column(
         children: [
-          NavigationRail(
-            selectedIndex: tabIdx,
-            backgroundColor: Colors.white,
-            labelType: NavigationRailLabelType.all,
-            onDestinationSelected: (i) => go(_tabPages[i]),
-            leading: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: paypalIcon(),
-            ),
-            destinations: [
-              const NavigationRailDestination(
-                icon: Icon(Icons.home_outlined),
-                selectedIcon: Icon(Icons.home_rounded),
-                label: Text('Home'),
-              ),
-              const NavigationRailDestination(
-                icon: Icon(Icons.history_rounded),
-                label: Text('Activity'),
-              ),
-              NavigationRailDestination(
-                icon: Badge(
-                  isLabelVisible: cartCount > 0,
-                  label: Text('$cartCount'),
-                  child: const Icon(Icons.shopping_bag_outlined),
-                ),
-                label: const Text('Store'),
-              ),
-              const NavigationRailDestination(
-                icon: Icon(Icons.person_outline_rounded),
-                label: Text('Profile'),
-              ),
-            ],
-          ),
-          const VerticalDivider(width: 1, color: SplitColors.line),
-          Expanded(child: content),
+          Expanded(child: body),
+          _stickyProductBar(activeProduct),
         ],
       );
     }
 
-    return Scaffold(
-      body: content,
-      bottomNavigationBar: useBottomNav
-          ? NavigationBar(
-              selectedIndex: tabIdx,
-              backgroundColor: Colors.white,
-              indicatorColor: SplitColors.surfaceTint,
-              onDestinationSelected: (i) => go(_tabPages[i]),
-              destinations: [
-                const NavigationDestination(
-                  icon: Icon(Icons.home_outlined),
-                  selectedIcon: Icon(Icons.home_rounded),
-                  label: 'Home',
+    return Stack(
+      children: [
+        body,
+        _bannerOverlay(),
+      ],
+    );
+  }
+
+  static const _tabPages = ['home', 'activity', 'store', 'contact-paypal'];
+
+  String _paypalHelpReply(String question) {
+    final q = question.toLowerCase();
+    if (q.contains('recharge') || q.contains('wallet') || q.contains('add money') || q.contains('top up')) {
+      return 'PayPal Wallet (${currencyAmount(walletBalanceCents, 'USD')} available):\n'
+          '• Tap Recharge on the Home PayPal Wallet card (or when prompted during checkout).\n'
+          '• Pick +\$25, +\$50, +\$100, +\$250, or enter any USD amount funded from Linked Card •••• 9104.\n'
+          '• Every transfer, group payment, and Store purchase can deduct directly from PayPal Wallet.';
+    }
+    if (q.contains('split cash') || q.contains('store') || q.contains('buy')) {
+      return 'Store & Split cash:\n'
+          '• Buying an item checks out directly from your PayPal Wallet or Linked Card.\n'
+          '• Immediately on the receipt screen, tap Split cash to divide the total evenly or enter custom shares with roommates.';
+    }
+    if (q.contains('qr') || q.contains('leah@paypal') || q.contains('receive')) {
+      return 'Receive Money QR (leah@paypal):\n'
+          '• Your personal QR appears at the bottom of Home and inside Profile.\n'
+          '• Friends can scan it in Scan & Pay to send money directly to Leah in their preferred currency.';
+    }
+    if (q.contains('rate') || q.contains('fx') || q.contains('sandbox') || q.contains('fee')) {
+      return 'Demo rates & PayPal Sandbox:\n'
+          '• International transfers show both sides before paying using Demo rates (with USD, GBP, CAD, EUR, JPY, INR).\n'
+          '• Demo Merchant SS-001 uses real PayPal Sandbox Checkout approval and capture.';
+    }
+    if (q.contains('dispute') || q.contains('refund') || q.contains('cancel') || q.contains('problem')) {
+      return 'Disputes & transaction help:\n'
+          '• Open Activity to inspect any payment receipt reference (e.g. DTX-..., RCH-...).\n'
+          '• PayPal Buyer Protection covers eligible Sandbox Merchant transactions, while demo transfers can be reset cleanly in Profile -> Developer Tools.';
+    }
+    return 'Hi Leah! I am PayPal AI Support. Ask me about:\n'
+        '• Recharging & paying with PayPal Wallet\n'
+        '• Splitting Store orders with Split cash\n'
+        '• Receiving payments with your leah@paypal QR\n'
+        '• Demo currency conversion rates & Sandbox SS-001';
+  }
+
+  Future<void> submitPaypalHelpTurn([String? overrideText]) async {
+    final text = (overrideText ?? helpInput.text).trim();
+    if (text.isEmpty || helpBusy) return;
+    if (overrideText == null) helpInput.clear();
+    setState(() {
+      helpBusy = true;
+      helpMessages.add((user: true, text: text));
+    });
+    if (!MediaQuery.disableAnimationsOf(context)) {
+      await Future<void>.delayed(const Duration(milliseconds: 220));
+    }
+    if (!mounted) return;
+    setState(() {
+      helpMessages.add((user: false, text: _paypalHelpReply(text)));
+      helpBusy = false;
+    });
+  }
+
+  Widget contactPaypalScreen() {
+    final isDark = SplitColors.isDark(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Row(
+            children: [
+              paypalIcon(size: 38),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Contact PayPal',
+                      style: Theme.of(context).textTheme.headlineMedium,
+                    ),
+                    Text(
+                      'AI Support Assistant · Wallet, QR & Payments',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
                 ),
-                const NavigationDestination(
-                  icon: Icon(Icons.history_rounded),
-                  label: 'Activity',
-                ),
-                NavigationDestination(
-                  icon: Badge(
-                    isLabelVisible: cartCount > 0,
-                    label: Text('$cartCount'),
-                    child: const Icon(Icons.shopping_bag_outlined),
+              ),
+              TextButton.icon(
+                onPressed: () => go('profile'),
+                icon: const Icon(Icons.help_outline_rounded, size: 17),
+                label: const Text('FAQs'),
+              ),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                for (final sample in const [
+                  'How do I recharge wallet?',
+                  'Explain Split cash',
+                  'How does leah@paypal QR work?',
+                  'Demo rates & Sandbox',
+                ])
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ActionChip(
+                      avatar: Icon(
+                        Icons.support_agent_rounded,
+                        size: 16,
+                        color: SplitColors.linkInk(context),
+                      ),
+                      label: Text(sample),
+                      onPressed: helpBusy
+                          ? null
+                          : () => unawaited(submitPaypalHelpTurn(sample)),
+                    ),
                   ),
-                  label: 'Store',
-                ),
-                const NavigationDestination(
-                  icon: Icon(Icons.person_outline_rounded),
-                  label: 'Profile',
-                ),
               ],
-            )
-          : null,
+            ),
+          ),
+        ),
+        SplitCard(
+          key: const Key('contact-paypal-card'),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (helpMessages.isEmpty) ...[
+                Text(
+                  'Ask PayPal AI for help.',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Tap a topic above or ask anything about PayPal Wallet, receipts, transfers, or Sandbox mode.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 12),
+              ],
+              for (final msg in helpMessages)
+                Align(
+                  alignment:
+                      msg.user ? Alignment.centerRight : Alignment.centerLeft,
+                  child: Container(
+                    margin: const EdgeInsets.only(bottom: 10),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: msg.user
+                          ? SplitColors.primary
+                          : SplitColors.secondaryCard(context),
+                      borderRadius: BorderRadius.circular(14),
+                      border: msg.user
+                          ? null
+                          : Border.all(color: SplitColors.lineColor(context)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (!msg.user)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: Text(
+                              'PayPal AI',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800,
+                                color: SplitColors.linkInk(context),
+                              ),
+                            ),
+                          ),
+                        Text(
+                          msg.text,
+                          style: TextStyle(
+                            color: msg.user
+                                ? Colors.white
+                                : SplitColors.ink(context),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              if (helpBusy) const LinearProgressIndicator(),
+              const SizedBox(height: 8),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: TextField(
+                      key: const Key('contact-paypal-input'),
+                      controller: helpInput,
+                      minLines: 1,
+                      maxLines: 3,
+                      textInputAction: TextInputAction.send,
+                      onSubmitted: (_) => unawaited(submitPaypalHelpTurn()),
+                      style: TextStyle(
+                        color: SplitColors.ink(context),
+                        fontSize: 15,
+                      ),
+                      decoration: InputDecoration(
+                        hintText: 'Ask PayPal…',
+                        hintStyle: TextStyle(
+                          color: SplitColors.mutedInk(
+                            context,
+                          ).withValues(alpha: 0.7),
+                        ),
+                        isDense: true,
+                        constraints: const BoxConstraints(minHeight: 44),
+                        filled: true,
+                        fillColor: isDark
+                            ? SplitColors.darkSecondary
+                            : SplitColors.surfaceSubtle,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 11,
+                        ),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: BorderSide(
+                            color: SplitColors.lineColor(context),
+                            width: 1.5,
+                          ),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: BorderSide(
+                            color: SplitColors.lineColor(context),
+                            width: 1.5,
+                          ),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: const BorderSide(
+                            color: SplitColors.primary,
+                            width: 1.8,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  ValueListenableBuilder<TextEditingValue>(
+                    valueListenable: helpInput,
+                    builder: (context, value, _) {
+                      final canSend =
+                          !helpBusy && value.text.trim().isNotEmpty;
+                      return SizedBox(
+                        width: 44,
+                        height: 44,
+                        child: FilledButton(
+                          onPressed:
+                              canSend ? () => submitPaypalHelpTurn() : null,
+                          style: FilledButton.styleFrom(
+                            backgroundColor: SplitColors.primary,
+                            disabledBackgroundColor:
+                                SplitColors.secondaryCard(context),
+                            foregroundColor: Colors.white,
+                            padding: EdgeInsets.zero,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          child: const Tooltip(
+                            message: 'Send question',
+                            child: Icon(Icons.arrow_upward_rounded, size: 21),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _tabScrollBody(int index) {
+    final routeName = _tabPages[index];
+    final controller = switch (index) {
+      0 => _homeScroll,
+      1 => _activityScroll,
+      2 => _storeScroll,
+      _ => _contactScroll,
+    };
+    return SafeArea(
+      child: SingleChildScrollView(
+        controller: controller,
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 104),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: index == 0 ? 680 : 1020),
+            child: currentBody(routeName),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_unlocked) {
+      return MedfarmPinLoginScreen(
+        autoPromptPhoneAuth: widget.autoPromptPhoneAuth,
+        authenticateOverride: widget.authenticateOverride,
+        onAuthenticated: () => setState(() => _unlocked = true),
+      );
+    }
+    final size = MediaQuery.sizeOf(context);
+    final isLandscape =
+        MediaQuery.orientationOf(context) == Orientation.landscape;
+    final useRail = size.width >= 720 || (isLandscape && size.width >= 540);
+    final useBottomNav = !useRail;
+    final tabIdx = activeTab.clamp(0, 3);
+
+    Widget tabView = Stack(
+      children: [
+        IndexedStack(
+          index: tabIdx,
+          children: [
+            _tabScrollBody(0),
+            _tabScrollBody(1),
+            _tabScrollBody(2),
+            _tabScrollBody(3),
+          ],
+        ),
+        _bannerOverlay(),
+      ],
+    );
+
+    if (useRail) {
+      tabView = Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          LayoutBuilder(
+            builder: (context, constraints) => SingleChildScrollView(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                child: IntrinsicHeight(
+                  child: NavigationRail(
+                    selectedIndex: tabIdx,
+                    backgroundColor: SplitColors.card(context),
+                    labelType: NavigationRailLabelType.all,
+                    onDestinationSelected: (i) => go(_tabPages[i]),
+                    leading: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: _brandMarkTile(),
+                    ),
+                    destinations: [
+                      const NavigationRailDestination(
+                        icon: Icon(Icons.home_outlined),
+                        selectedIcon: Icon(Icons.home_rounded),
+                        label: Text('Home'),
+                      ),
+                      const NavigationRailDestination(
+                        icon: Icon(Icons.history_rounded),
+                        label: Text('Activity'),
+                      ),
+                      NavigationRailDestination(
+                        icon: Badge(
+                          isLabelVisible: cartCount > 0,
+                          label: Text('$cartCount'),
+                          child: const Icon(Icons.shopping_bag_outlined),
+                        ),
+                        label: const Text('Store'),
+                      ),
+                      const NavigationRailDestination(
+                        icon: Icon(Icons.support_agent_outlined),
+                        selectedIcon: Icon(Icons.support_agent_rounded),
+                        label: Text('Contact'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          VerticalDivider(width: 1, color: SplitColors.lineColor(context)),
+          Expanded(child: tabView),
+        ],
+      );
+    }
+
+    return PopScope(
+      canPop: tabIdx == 0,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && tabIdx != 0) {
+          go('home');
+        }
+      },
+      child: Scaffold(
+        body: tabView,
+        floatingActionButton: tabIdx == 3
+            ? null
+            : FloatingActionButton.extended(
+                key: const Key('fab-ask-ai'),
+                onPressed: () => go('talk'),
+                backgroundColor: SplitColors.primary,
+                foregroundColor: Colors.white,
+                elevation: 4,
+                icon: const Icon(Icons.auto_awesome_rounded),
+                label: const Text(
+                  'Ask AI',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ),
+        bottomNavigationBar: useBottomNav
+            ? NavigationBar(
+                selectedIndex: tabIdx,
+                backgroundColor: SplitColors.card(context),
+                indicatorColor: SplitColors.tint(context),
+                onDestinationSelected: (i) => go(_tabPages[i]),
+                destinations: [
+                  const NavigationDestination(
+                    icon: Icon(Icons.home_outlined),
+                    selectedIcon: Icon(Icons.home_rounded),
+                    label: 'Home',
+                  ),
+                  const NavigationDestination(
+                    icon: Icon(Icons.history_rounded),
+                    label: 'Activity',
+                  ),
+                  NavigationDestination(
+                    icon: Badge(
+                      isLabelVisible: cartCount > 0,
+                      label: Text('$cartCount'),
+                      child: const Icon(Icons.shopping_bag_outlined),
+                    ),
+                    label: 'Store',
+                  ),
+                  const NavigationDestination(
+                    icon: Icon(Icons.support_agent_outlined),
+                    selectedIcon: Icon(Icons.support_agent_rounded),
+                    label: 'Contact',
+                  ),
+                ],
+              )
+            : null,
+      ),
+    );
+  }
+}
+
+class _SubScreenScaffold extends StatelessWidget {
+  final _DemoState state;
+
+  const _SubScreenScaffold({required this.state});
+
+  @override
+  Widget build(BuildContext context) {
+    final routeName = ModalRoute.of(context)?.settings.name ?? 'home';
+    return Scaffold(
+      body: AnimatedBuilder(
+        animation: state._uiTick,
+        builder: (_, _) => state._buildSubRouteBody(context, routeName),
+      ),
     );
   }
 }
