@@ -5,7 +5,7 @@ import {mkdtemp, rm, readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createApp} from '../app.mjs';
-import {Store, defaultContacts, formatMoney, fxQuote, newState, normalizeState} from '../store.mjs';
+import {Store, defaultContacts, formatMoney, fxQuote, createExchangeRateLoader, newState, normalizeState} from '../store.mjs';
 import {PayPal} from '../paypal.mjs';
 import {normalizeExtractedBill, normalizeParsedRequest} from '../nvidia.mjs';
 const organizerToken='organizer-test-key-abcdefghijklmnopqrstuvwxyz';
@@ -19,11 +19,12 @@ function fakePayPal(){
     async verify(_event,headers){return headers['paypal-transmission-sig']==='valid';}
   };
 }
-function setup({store, paypal=fakePayPal(), nvidia, delivery}={}){
+function setup({store, paypal=fakePayPal(), nvidia, delivery, localOrganizerAutoLogin=false}={}){
   store ||= new Store();store.state ||= newState();
-  const {handler}=createApp({store,paypal,nvidia,delivery,organizerToken,baseUrl,staticDir:join(import.meta.dirname,'../../website/dist')});
-  async function request(path,{method='GET',body,auth=false,headers={}}={}){
+  const {handler}=createApp({store,paypal,nvidia,delivery,organizerToken,baseUrl,localOrganizerAutoLogin,staticDir:join(import.meta.dirname,'../../website/dist')});
+  async function request(path,{method='GET',body,auth=false,headers={},remoteAddress='127.0.0.1'}={}){
     const req=Readable.from(body===undefined?[]:[Buffer.from(JSON.stringify(body))]);
+    req.socket={remoteAddress};
     req.url=path;req.method=method;req.headers={host:'localhost:3000',...(body===undefined?{}:{'content-type':'application/json'}),...(auth?{authorization:'Bearer '+organizerToken}:{}),...headers};
     const result={headers:{}};const res={setHeader(k,v){result.headers[k.toLowerCase()]=v;},writeHead(code,headers={}){result.status=code;for(const[k,v]of Object.entries(headers))result.headers[k.toLowerCase()]=v;},end(data){result.text=data?.toString()||'';try{result.body=JSON.parse(result.text);}catch{}}};
     await handler(req,res);return result;
@@ -89,7 +90,7 @@ test('CSRF, host and static traversal protection',async()=>{
   const t=setup();assert.equal((await t.request('/api/organizer/session',{method:'POST',body:{token:organizerToken},headers:{origin:'https://evil.example'}})).status,403);
   assert.equal((await t.request('/api/health',{headers:{host:'evil.example'}})).status,400);
   assert.equal((await t.request('/%2e%2e%2f%2e%2e%2fserver/.env')).status,403);
-  const index=await t.request('/');assert.equal(index.status,200);assert.match(index.text,/<title>SplitSync/);
+  const index=await t.request('/');assert.equal(index.status,200);assert.match(index.text,/<title>PayPal Hackathon/);
 });
 test('creation timeout retries the same durable request ID across restart',async()=>{
   const dir=await mkdtemp(join(tmpdir(),'splitsync-'));
@@ -229,11 +230,11 @@ test('reimbursement requests stay Created when delivery fails, isolate tokens, a
 test('international FX precision, send-intent validated reply, and idempotent demo-pay work cleanly',async()=>{
   const contacts=defaultContacts();
   const gbp=fxQuote(2000,'USD','GBP');
-  assert.equal(gbp.targetAmountCents,1580);
-  assert.equal(formatMoney(gbp.targetAmountCents,'GBP',true),'£15.80 GBP');
+  assert.equal(gbp.targetAmountCents,1490);
+  assert.equal(formatMoney(gbp.targetAmountCents,'GBP',true),'£14.90 GBP');
   const jpy=fxQuote(2000,'USD','JPY');
-  assert.equal(jpy.targetAmountCents,307000);
-  assert.equal(formatMoney(jpy.targetAmountCents,'JPY',true),'¥3,070 JPY');
+  assert.equal(jpy.targetAmountCents,316400);
+  assert.equal(formatMoney(jpy.targetAmountCents,'JPY',true),'¥3,164 JPY');
 
   const sendParsed=normalizeParsedRequest({
     intent:'send',
@@ -241,14 +242,14 @@ test('international FX precision, send-intent validated reply, and idempotent de
   },contacts,null);
   assert.equal(sendParsed.intent,'send');
   assert.equal(sendParsed.recipients[0].targetCurrency,'GBP');
-  assert.match(sendParsed.replyText,/£15\.80 GBP/);
+  assert.match(sendParsed.replyText,/£14\.90 GBP/);
   assert.match(sendParsed.replyText,/Verify the recipient and amount before you pay/);
 
   const t=setup();
   const tx1=await t.request('/api/organizer/demo-pay',{method:'POST',auth:true,body:{contactId:'allen',sourceAmountCents:2000,sourceCurrency:'USD',targetCurrency:'GBP',note:'Thanks for coffee',clientTxId:'tx-allen-1'}});
   assert.equal(tx1.status,200);
   assert.equal(tx1.body.deduplicated,false);
-  assert.equal(tx1.body.transaction.targetAmountCents,1580);
+  assert.equal(tx1.body.transaction.targetAmountCents,1490);
 
   const tx2=await t.request('/api/organizer/demo-pay',{method:'POST',auth:true,body:{contactId:'allen',sourceAmountCents:2000,sourceCurrency:'USD',targetCurrency:'GBP',note:'Thanks for coffee',clientTxId:'tx-allen-1'}});
   assert.equal(tx2.status,200);
@@ -259,11 +260,12 @@ test('international FX precision, send-intent validated reply, and idempotent de
   assert.equal(st.body.demoTransactions.length,1);
 });
 
-test('demo requests start Waiting for payment, auto-settle persistently on due timestamps, save rent rules opt-in, and reset cleanly',async()=>{
+test('practice requests start Waiting for payment, auto-settle persistently on due timestamps, save rent rules opt-in, and reset cleanly',async()=>{
   const t=setup();
   const created=await t.request('/api/organizer/requests',{method:'POST',auth:true,body:{title:'Rent Dec',kind:'rent',channel:'demo',demoAutoSettle:true,dueDate:'2026-12-01',recipients:[{name:'Maya',contactId:'maya',amountCents:80000,currency:'USD',reason:'December rent'},{name:'Arun',contactId:'arun',amountCents:80000,currency:'USD',reason:'December rent'}]}});
   assert.equal(created.status,200);
   assert.equal(created.body.request.recipients[0].status,'Waiting for payment');
+  assert.equal(created.body.request.recipients[0].deliveryStatus,'Created');
   assert(Number.isFinite(created.body.request.recipients[0].settleAt));
 
   // Fast-forward first recipient due timestamp only -> first settles, second waits
@@ -279,10 +281,85 @@ test('demo requests start Waiting for payment, auto-settle persistently on due t
   // Opt-in rent rule & reset
   const rule=await t.request('/api/organizer/rent-rule',{method:'POST',auth:true,body:{contactIds:['maya','arun'],totalCents:160000,currency:'USD',mode:'equal',dayOfMonth:1}});
   assert.equal(rule.status,200);assert.equal(rule.body.savedRentRule.totalCents,160000);
+  await t.publish();
+  const merchantShare = t.store.state.participants.Maya.shareToken;
+  const merchantOrder = await t.create();
+  assert.equal(merchantOrder.status, 200);
+  const reimbursement = await t.request('/api/organizer/requests', {method:'POST', auth:true,
+    body:{title:'A personal reimbursement', channel:'link', recipients:[{name:'Maya',amountCents:2000}]}});
+  assert.equal(reimbursement.status, 200);
   const reset=await t.request('/api/organizer/reset-demo',{method:'POST',auth:true,body:{}});
   assert.equal(reset.status,200);
   const clean=await t.request('/api/organizer/state',{auth:true});
-  assert.equal(clean.body.reimbursements.length,0);
+  assert.equal(clean.body.reimbursements.length,1);
+  assert.equal(clean.body.reimbursements[0].id, reimbursement.body.request.id);
+  assert.equal(t.store.state.participants.Maya.shareToken, merchantShare);
+  assert.equal(t.store.state.participants.Maya.orders.length, 1);
   assert.equal(clean.body.demoTransactions.length,0);
   assert.equal(clean.body.savedRentRule,null);
+});
+
+test('practice payment batches validate every row before saving and deduplicate concurrent retries', async () => {
+  const t = setup();
+  const path = '/api/organizer/demo-pay';
+  const payments = ['maya', 'arun', 'allen', 'sofia'].map(contactId => ({
+    contactId,
+    clientTxId: 'group-test-' + contactId,
+    sourceAmountCents: 2000,
+    sourceCurrency: 'USD',
+  }));
+  const pay = payments => t.request(path, {method: 'POST', auth: true, body: {payments}});
+  assert.equal((await pay([...payments.slice(0, 3), {...payments[3], sourceAmountCents: -1}])).status, 400);
+  assert.equal(t.store.state.demoTransactions.length, 0);
+  assert.equal((await pay([payments[0], payments[0]])).status, 400);
+
+  const [first, retry] = await Promise.all([pay(payments), pay(payments)]);
+  assert.equal(first.status, 200);
+  assert.equal(retry.status, 200);
+  assert.deepEqual(first.body.transactions.map(tx => tx.contactId), payments.map(p => p.contactId));
+  assert.deepEqual(retry.body.transactions, first.body.transactions);
+  assert.equal(t.store.state.demoTransactions.length, 4);
+  assert.equal(t.paypal.creates, 0);
+});
+
+
+test('opt-in organizer auto login is restricted to local requests and trusted origins', async () => {
+  const t = setup({localOrganizerAutoLogin: true});
+  assert.equal((await t.request('/api/organizer/state')).status, 200);
+  assert.equal((await t.request('/api/health')).body.localOrganizerAutoLogin, true);
+  assert.equal((await t.request('/api/organizer/state', {remoteAddress: '203.0.113.1'})).status, 401);
+  assert.equal((await t.request('/api/organizer/state', {headers: {origin: 'https://example.com'}})).status, 401);
+  assert.equal((await t.request('/api/organizer/state', {headers: {'sec-fetch-site': 'cross-site'}})).status, 401);
+  assert.equal((await t.request('/api/organizer/state', {headers: {origin: baseUrl}})).status, 200);
+  assert.equal((await setup().request('/api/organizer/state')).status, 401);
+});
+
+
+test('ECB rates convert in both directions and cache a complete dated snapshot', async () => {
+  let calls = 0;
+  const load = createExchangeRateLoader(async () => {
+    calls++;
+    const rates = {CAD: 1.4, EUR: 0.9, GBP: 0.75, INR: 94, JPY: 160};
+    return {ok: true, json: async () => Object.entries(rates).map(([quote, rate]) => ({
+      base: 'USD', quote, rate, date: '2026-11-11',
+    }))};
+  });
+  const [snapshot, cached] = await Promise.all([load(), load()]);
+  assert.equal(calls, 1);
+  assert.deepEqual(snapshot, cached);
+  assert.equal(fxQuote(1000, 'USD', 'JPY', snapshot.rates).targetAmountCents, 160000);
+  assert.equal(fxQuote(160000, 'JPY', 'USD', snapshot.rates).targetAmountCents, 1000);
+});
+
+test('requests preserve the full bill and record the organizer share separately', async () => {
+  const t = setup();
+  const result = await t.request('/api/organizer/requests', {
+    method: 'POST', auth: true, body: {
+      currency: 'JPY', totalCents: 100000,
+      recipients: ['Maya', 'Arun', 'Allen'].map(name => ({name, currency: 'JPY', amountCents: 33300})),
+    },
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.request.ownShareCents, 100);
+  assert.equal(result.body.request.recipients.reduce((sum, row) => sum + row.amountCents, 0), 99900);
 });

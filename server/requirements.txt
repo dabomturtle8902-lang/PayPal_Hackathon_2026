@@ -1,1 +1,4 @@
 nvidia-riva-client
+
+faster-whisper>=1.2,<2
+av<19

@@ -15,11 +15,11 @@
 }
 
 :root {
-  --primary: #0F67FE;
+  --primary: #1457D9;
   --primary-hover: #0B55D6;
   --primary-ink: #0A4EC4;
   --focus-ring: rgba(15, 103, 254, 0.20);
-  --navy: #242E49;
+  --navy: #172846;
   --navy-deep: #182035;
   --teal: #48B3A9;
   --teal-ink: #136B63;
@@ -30,12 +30,12 @@
   --error-bg: #FFF2F4;
   --amber: #9E6200;
   --amber-bg: #FFF4DE;
-  --bg: #F2F5F9;
+  --bg: #F1F5FC;
   --surface: #FFFFFF;
   --surface-tint: #EDF5FF;
   --surface-subtle: #FAFAFA;
-  --ink: #242E49;
-  --muted: #5D6A85;
+  --ink: #172846;
+  --muted: #4C5C77;
   --line: #DCE1E8;
   --border-strong: #9EA7B8;
   --paypal-bg: #FFC439;
@@ -274,7 +274,7 @@ body.payer .app-main {
 
 .screen-top h1 {
   margin: 0;
-  font-size: clamp(21px, 2.6vw, 28px);
+  font-size: clamp(26px, 3vw, 34px);
   font-weight: 800;
   letter-spacing: -0.025em;
   color: var(--navy);
@@ -284,7 +284,7 @@ body.payer .app-main {
 .screen-sub {
   margin: 4px 0 0;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 15px;
 }
 
 .hub-top {
@@ -331,11 +331,11 @@ h3 {
 p {
   margin: 0;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 16px;
 }
 
 .sub {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--muted);
 }
 
@@ -364,7 +364,7 @@ p {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 46px;
+  min-height: 48px;
   padding: 11px 16px;
   border-radius: var(--radius-btn);
   border: 1.5px solid var(--line);
@@ -728,14 +728,15 @@ p {
 
 .composer-row {
   display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
 }
 
-.composer-row input,
+.composer-row button { flex-shrink: 0; }
 .composer-row textarea {
-  flex: 1 1 220px;
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
   min-height: 44px;
   padding: 10px 12px;
   border-radius: 12px;
@@ -1487,3 +1488,153 @@ p {
     bottom: 18px;
   }
 }
+
+/* PayPal Hackathon identity */
+.brand-mark:has(img) { background: white; }
+.brand-mark img, .app-identity img { width: 36px; height: 36px; object-fit: contain; border-radius: 9px; }
+.app-identity { display: flex; align-items: center; gap: 10px; }
+.app-identity .sub { font-size: 14px; }
+.hub-card.home-actions {
+  background: transparent;
+  padding: 0;
+  border: 0;
+}
+.home-actions .hub-actions-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.home-actions .hub-tile,
+.home-actions .ask-banner {
+  color: var(--navy);
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.home-actions .hub-tile {
+  align-items: flex-start;
+  text-align: left;
+  min-height: 106px;
+  padding: 16px;
+  border-radius: 20px;
+}
+.home-actions .hub-tile b, .ask-action-title { font-size: 17px; }
+.ask-action-title { display: block; }
+.home-actions .hub-tile-icon { background: var(--surface-tint); color: var(--primary-ink); }
+.home-actions .scan-action {
+  grid-column: 1 / -1;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 14px;
+  padding: 20px;
+  background: #103693;
+  color: white;
+}
+.home-actions .scan-action:hover { background: #1845AE; }
+.scan-action .hub-tile-icon { flex: 0 0 58px; height: 58px; background: #235BDC; color: white; }
+.scan-action .hub-tile-icon svg { width: 32px; height: 32px; }
+.scan-action > svg { width: 24px; height: 24px; margin-left: auto; flex-shrink: 0; }
+.home-actions .scan-action b { display: block; font-size: clamp(22px, 4vw, 30px); }
+.scan-action small { display: block; font-size: 14px; color: #DCE8FF; }
+.home-actions .ask-banner { min-height: 86px; border-radius: 18px; }
+.ask-banner > svg { width: 24px; height: 24px; flex: 0 0 24px; }
+.ask-banner > span { min-width: 0; }
+.ask-banner .hub-tile-icon { flex-shrink: 0; }
+body[data-page="home"] #app { max-width: 760px; margin-inline: auto; }
+
+@media (max-width: 460px) {
+  .composer-row .mic-btn span { display: none; }
+  .composer-row .mic-btn { width: 44px; padding-inline: 0; }
+  .composer-row .btn { padding-inline: 10px; }
+  .home-actions .hub-tile { padding: 14px; }
+}
+
+.checkout-icon { width: 21px; height: 21px; object-fit: contain; border-radius: 4px; }
+
+.bill-capture-actions {
+  margin-top: 16px;
+}
+
+.bill-capture-actions .actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr));
+  gap: 12px;
+  margin-top: 0;
+}
+
+.bill-capture-actions .btn {
+  min-height: 58px;
+}
+
+.bill-fields,
+.bill-adjacent-fields {
+  display: grid;
+  gap: 12px;
+  align-items: end;
+}
+
+.bill-adjacent-fields {
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+}
+
+.bill-editor .field-group {
+  min-width: 0;
+  margin: 0;
+}
+
+.bill-editor .field-group :is(input, select) {
+  min-height: 52px;
+  min-width: 0;
+}
+
+.bill-item {
+  padding: 12px;
+  margin-block: 10px;
+  border-radius: 14px;
+  background: var(--surface-tint);
+}
+
+.contact-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 125px), 1fr));
+  gap: 10px;
+}
+
+.contact-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 74px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: var(--navy);
+  text-align: left;
+  cursor: pointer;
+}
+
+.contact-card b,
+.contact-card small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.contact-card b { font-size: 17px; }
+.contact-card small { color: var(--muted); }
+.contact-card[aria-pressed="true"] {
+  background: var(--surface-tint);
+  border-color: var(--primary);
+}
+
+@media (max-width: 360px) {
+  .bill-item { grid-template-columns: minmax(0, 1fr); }
+}
+
+.profile-contact {
+  min-height: 76px;
+  padding: 12px;
+  margin-top: 8px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--surface-tint);
+}
+
+.profile-contact .grow { min-width: 0; overflow-wrap: anywhere; }
+.profile-contact .grow b { font-size: 17px; }

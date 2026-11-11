@@ -2,7 +2,7 @@ import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {resolve, extname, sep} from 'node:path';
 import {timingSafeEqual, randomUUID} from 'node:crypto';
-import {FX_RATES_USD, defaultContacts, fxQuote, names, normalizeCurrency, secret} from './store.mjs';
+import {FX_RATES_USD, FX_REFERENCE_DATE, convertAmountCents, defaultContacts, fxQuote, names, normalizeCurrency, secret} from './store.mjs';
 
 const fail = (status, message) => { throw Object.assign(new Error(message), {status}); };
 function equal(a, b) {
@@ -29,7 +29,7 @@ function defaultDelivery() {
   };
 }
 
-export function createApp({store, paypal, nvidia, delivery, organizerToken, baseUrl, flutterOrigin = '', staticDir}) {
+export function createApp({store, paypal, nvidia, delivery, organizerToken, baseUrl, flutterOrigin = '', localOrganizerAutoLogin = false, loadRates = async () => ({rates: FX_RATES_USD, date: FX_REFERENCE_DATE}), staticDir}) {
   const base = new URL(baseUrl);
   const deliv = delivery || defaultDelivery();
   const participants = () => Object.values(store.state.participants);
@@ -37,7 +37,7 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
 
   const publicShare = p => ({
     name: p.name, amountCents: p.amountCents, currency: 'USD', status: p.status, receipt: p.receipt,
-    lamp: store.state.lamp, published: store.state.published, merchant: 'Demo Merchant', purchaseTitle: 'Move-in essentials',
+    lamp: store.state.lamp, published: store.state.published, merchant: 'Sandbox Merchant', purchaseTitle: 'Move-in essentials',
   });
   const admin = p => ({...publicShare(p), shareUrl: `${base.origin}/#pay/${p.shareToken}`});
   const providerSummary = () => ({
@@ -55,6 +55,7 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
   });
   const publicReimbursement = (req, r) => ({
     mode: 'reimbursement',
+    demo: req.demo === true,
     requestId: req.id,
     title: req.title,
     merchant: req.merchant,
@@ -72,11 +73,19 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
     deliveryStatus: r.deliveryStatus,
     receiptRef: r.receiptRef || null,
     paypalCheckoutSupported: false,
-    note: 'Personal receipt reimbursement request. PayPal Sandbox commercial Orders v2 checkout applies only to Demo Merchant purchases (SS-001).',
+    note: req.demo ? 'Practice request with simulated settlement. No money moves.' : 'Personal receipt reimbursement request. PayPal Sandbox merchant checkout applies only to Sandbox Merchant purchases (SS-001).',
   });
 
+  function localOrganizer(req) {
+    return localOrganizerAutoLogin
+      && ['localhost', '127.0.0.1', '[::1]'].includes(base.hostname)
+      && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket?.remoteAddress)
+      && (!req.headers.origin || [base.origin, flutterOrigin].includes(req.headers.origin))
+      && req.headers['sec-fetch-site'] !== 'cross-site';
+  }
+
   function organizer(req) {
-    return equal(req.headers.authorization, `Bearer ${organizerToken}`)
+    return localOrganizer(req) || equal(req.headers.authorization, `Bearer ${organizerToken}`)
       || equal((req.headers.cookie || '').split(';').map(s => s.trim()).find(s => s.startsWith('splitsync_session='))?.slice(18), sessionKey);
   }
 
@@ -118,6 +127,7 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
     let changed = false;
     const now = Date.now();
     for (const reqItem of store.state.reimbursements || []) {
+      if (!reqItem.demo) continue;
       for (const r of reqItem.recipients || []) {
         if (r.status === 'Waiting for payment' && Number.isFinite(r.settleAt) && now >= r.settleAt) {
           r.status = 'Paid';
@@ -144,10 +154,10 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
       const targetCurrency = normalizeCurrency(r?.targetCurrency || currency, currency);
       const reason = typeof r?.reason === 'string' && r.reason.trim() ? r.reason.trim().slice(0, 140) : 'Shared expense';
       if (!name) fail(400, 'Every request row requires a recipient name.');
-      if (!Number.isInteger(amountCents) || amountCents <= 0 || amountCents > 100000000) {
+      if (!Number.isInteger(amountCents) || amountCents <= 0 || amountCents > 100000000 || (currency === 'JPY' && amountCents % 100 !== 0)) {
         fail(400, `Enter a valid positive amount for ${name}.`);
       }
-      const quote = fxQuote(amountCents, currency, targetCurrency);
+      const quote = fxQuote(amountCents, currency, targetCurrency, opts.rates);
       const jitterMs = (index * 2400) + 2200 + ((index * 537) % 700);
       return {
         id: `REC-${secret().slice(0, 6).toUpperCase()}`,
@@ -161,8 +171,8 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
         reason,
         shareToken: secret(),
         status: demoAutoSettle ? 'Waiting for payment' : 'Created',
-        deliveryStatus: demoAutoSettle ? 'Sent' : 'Created',
-        deliveryMessage: demoAutoSettle ? 'Demo request active — awaiting simulated payer confirmation.' : '',
+        deliveryStatus: 'Created',
+        deliveryMessage: demoAutoSettle ? 'Practice request active — awaiting simulated payer confirmation.' : '',
         settleAt: demoAutoSettle ? now + jitterMs : null,
         demoSettled: false,
         settledAt: null,
@@ -229,13 +239,16 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
         if (!req.headers['content-type']?.startsWith('application/json')) fail(415, 'Use application/json.');
       }
 
+      if (path === '/api/fx-rates' && req.method === 'GET') {
+        return send(200, await loadRates());
+      }
       if (path === '/api/health' && req.method === 'GET') {
         const p = providerSummary();
-        return send(200, {mode: 'sandbox', configured: p.paypalConfigured, aiConfigured: p.aiConfigured, ...p});
+        return send(200, {mode: 'sandbox', localOrganizerAutoLogin: Boolean(localOrganizer(req)), configured: p.paypalConfigured, aiConfigured: p.aiConfigured, ...p});
       }
       if (path === '/api/organizer/session' && req.method === 'POST') {
         const input = await body(req);
-        if (!equal(input.token, organizerToken)) fail(401, 'Invalid SplitSync organizer key.');
+        if (!equal(input.token, organizerToken)) fail(401, 'Invalid organizer key.');
         return send(200, {ok: true}, {'Set-Cookie': `splitsync_session=${sessionKey}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${base.protocol === 'https:' ? '; Secure' : ''}`});
       }
       if (path === '/api/organizer/logout' && req.method === 'POST') {
@@ -243,7 +256,7 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
       }
 
       if (path.startsWith('/api/organizer/')) {
-        if (!organizer(req)) fail(401, 'Enter the SplitSync organizer key printed in the server terminal.');
+        if (!organizer(req)) fail(401, 'Enter the organizer key printed in the server terminal.');
         if (path === '/api/organizer/purchase' && req.method === 'GET') {
           return send(200, {
             purchaseId: 'SS-001', lamp: store.state.lamp, published: store.state.published,
@@ -251,6 +264,7 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
           });
         }
         if (path === '/api/organizer/state' && req.method === 'GET') {
+          const {rates, date} = await loadRates();
           return await store.exclusive(async () => {
             if (reconcileDueDemoSettlements()) await store.save();
             return send(200, {
@@ -262,55 +276,79 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
               reimbursements: (store.state.reimbursements || []).map(adminReimbursement),
               demoTransactions: store.state.demoTransactions || [],
               savedRentRule: store.state.savedRentRule || null,
-              fxRates: FX_RATES_USD,
+              fxRates: rates,
+              fxRateDate: date,
               providers: providerSummary(),
             });
           });
         }
         if (path === '/api/organizer/demo-pay' && req.method === 'POST') {
-          const input = await body(req);
-          const clientTxId = typeof input?.clientTxId === 'string' ? input.clientTxId.trim().slice(0, 80) : '';
-          const contacts = store.state.contacts || [];
-          const contact = contacts.find(c => c.id === input?.contactId)
-            || contacts.find(c => c.name.toLowerCase() === String(input?.recipientName || '').trim().toLowerCase());
-          const recipientName = contact?.name || (typeof input?.recipientName === 'string' ? input.recipientName.trim().slice(0, 80) : '');
-          if (!recipientName) fail(400, 'Choose a recipient before paying.');
-          const sourceCurrency = normalizeCurrency(input?.sourceCurrency, 'USD');
-          const targetCurrency = normalizeCurrency(input?.targetCurrency || contact?.currency || sourceCurrency, sourceCurrency);
-          const sourceAmountCents = Number(input?.sourceAmountCents);
-          if (!Number.isInteger(sourceAmountCents) || sourceAmountCents <= 0 || sourceAmountCents > 100000000) {
-            fail(400, 'Enter a valid positive amount.');
+          const payload = await body(req);
+          const batch = Object.hasOwn(payload ?? {}, 'payments');
+          const inputs = batch ? payload.payments : [payload];
+          if (!Array.isArray(inputs) || !inputs.length || inputs.length > 20) {
+            fail(400, 'Choose between 1 and 20 payments.');
           }
-          const note = typeof input?.note === 'string' && input.note.trim() ? input.note.trim().slice(0, 140) : 'Payment';
-          return await store.exclusive(async () => {
-            store.state.demoTransactions ||= [];
-            if (clientTxId) {
-              const existing = store.state.demoTransactions.find(tx => tx.clientTxId === clientTxId);
-              if (existing) return send(200, {transaction: existing, deduplicated: true});
+          const contacts = store.state.contacts || [];
+          const {rates, date} = await loadRates();
+          const payments = inputs.map(input => {
+            const clientTxId = typeof input?.clientTxId === 'string' ? input.clientTxId.trim().slice(0, 80) : '';
+            const contact = contacts.find(c => c.id === input?.contactId)
+              || contacts.find(c => c.name.toLowerCase() === String(input?.recipientName || '').trim().toLowerCase());
+            const recipientName = contact?.name || (typeof input?.recipientName === 'string' ? input.recipientName.trim().slice(0, 80) : '');
+            if (!recipientName || (batch && !contact)) fail(400, 'Choose a recipient before paying.');
+            const sourceCurrency = normalizeCurrency(input?.sourceCurrency, 'USD');
+            const targetCurrency = normalizeCurrency(input?.targetCurrency || contact?.currency || sourceCurrency, sourceCurrency);
+            const sourceAmountCents = Number(input?.sourceAmountCents);
+            if (!Number.isInteger(sourceAmountCents) || sourceAmountCents <= 0 || sourceAmountCents > 100000000 || (sourceCurrency === 'JPY' && sourceAmountCents % 100 !== 0)) {
+              fail(400, 'Enter a valid positive amount.');
             }
-            const quote = fxQuote(sourceAmountCents, sourceCurrency, targetCurrency);
-            const tx = {
-              id: `DTX-${secret().slice(0, 6).toUpperCase()}`,
-              clientTxId: clientTxId || randomUUID(),
-              type: 'demo-send',
-              recipientName,
-              contactId: contact?.id || null,
-              country: contact?.country || '',
-              flag: contact?.flag || '',
-              sourceAmountCents: quote.sourceAmountCents,
-              sourceCurrency: quote.sourceCurrency,
-              targetAmountCents: quote.targetAmountCents,
-              targetCurrency: quote.targetCurrency,
-              inrEquivalentCents: quote.inrEquivalentCents,
-              rate: quote.rate,
-              note,
-              status: 'Completed',
-              demo: true,
-              createdAt: new Date().toISOString(),
-            };
-            store.state.demoTransactions.unshift(tx);
-            await store.save();
-            return send(200, {transaction: tx, deduplicated: false});
+            const note = typeof input?.note === 'string' && input.note.trim() ? input.note.trim().slice(0, 140) : 'Payment';
+            return {clientTxId, contact, recipientName, note, quote: fxQuote(sourceAmountCents, sourceCurrency, targetCurrency, rates)};
+          });
+          const ids = payments.map(p => p.clientTxId);
+          if (batch && (ids.includes('') || new Set(ids).size !== ids.length)) {
+            fail(400, 'Each payment needs a unique transaction reference.');
+          }
+          return await store.exclusive(async () => {
+            const previous = store.state.demoTransactions || [];
+            const created = [];
+            const transactions = payments.map(({clientTxId, contact, recipientName, note, quote}) => {
+              const existing = clientTxId && previous.find(tx => tx.clientTxId === clientTxId);
+              if (existing) return existing;
+              const tx = {
+                id: 'DTX-' + secret().slice(0, 6).toUpperCase(),
+                clientTxId: clientTxId || randomUUID(),
+                type: 'demo-send',
+                recipientName,
+                contactId: contact?.id || null,
+                country: contact?.country || '',
+                flag: contact?.flag || '',
+                sourceAmountCents: quote.sourceAmountCents,
+                sourceCurrency: quote.sourceCurrency,
+                targetAmountCents: quote.targetAmountCents,
+                targetCurrency: quote.targetCurrency,
+                inrEquivalentCents: quote.inrEquivalentCents,
+                rate: quote.rate,
+                rateDate: date,
+                note,
+                status: 'Completed',
+                demo: true,
+                createdAt: new Date().toISOString(),
+              };
+              created.push(tx);
+              return tx;
+            });
+            if (created.length) {
+              store.state.demoTransactions = [...created, ...previous];
+              try {
+                await store.save();
+              } catch (error) {
+                store.state.demoTransactions = previous;
+                throw error;
+              }
+            }
+            return send(200, batch ? {transactions} : {transaction: transactions[0], deduplicated: !created.length});
           });
         }
         if (path === '/api/organizer/rent-rule' && req.method === 'POST') {
@@ -338,21 +376,9 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
         }
         if (path === '/api/organizer/reset-demo' && req.method === 'POST') {
           return await store.exclusive(async () => {
-            store.state.lamp = 'Maya';
-            store.state.published = false;
-            store.state.participants = Object.fromEntries(names.map(n => [n, {
-              name: n,
-              amountCents: n === 'Maya' ? 7000 : 4000,
-              shareToken: secret(),
-              status: 'Awaiting payment',
-              orders: [],
-              receipt: null,
-            }]));
-            store.state.contacts = defaultContacts();
-            store.state.reimbursements = [];
+            store.state.reimbursements = (store.state.reimbursements || []).filter(record => !record.demo);
             store.state.demoTransactions = [];
             store.state.savedRentRule = null;
-            store.state.events = [];
             await store.save();
             return send(200, {ok: true});
           });
@@ -416,6 +442,7 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
             contacts: store.state.contacts || [],
             bill: input.bill || null,
             currentDraft: Array.isArray(input?.currentDraft) ? input.currentDraft : null,
+            rates: (await loadRates()).rates,
             lastIntent: typeof input?.lastIntent === 'string' ? input.lastIntent : '',
           });
           return send(200, draft);
@@ -444,7 +471,11 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
           const channel = ['demo', 'link', 'manual', 'email', 'sms'].includes(input?.channel) ? input.channel : 'demo';
           const demoAutoSettle = Boolean(input?.demoAutoSettle || channel === 'demo');
           const clientRequestId = typeof input?.clientRequestId === 'string' ? input.clientRequestId.trim().slice(0, 80) : '';
-          const recipients = validateRecipients(input?.recipients, {demoAutoSettle});
+          const {rates} = await loadRates();
+          const requested = Array.isArray(input?.recipients)
+            ? input.recipients.filter(row => row?.contactId !== 'leah')
+            : input?.recipients;
+          const recipients = validateRecipients(requested, {demoAutoSettle, rates});
           const items = Array.isArray(input?.items)
             ? input.items.slice(0, 30).map(i => ({
                 name: String(i?.name || 'Item').trim().slice(0, 100),
@@ -461,6 +492,9 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
               const dup = store.state.reimbursements.find(r => r.clientRequestId === clientRequestId);
               if (dup) return send(200, {request: adminReimbursement(dup), deliveryOutcomes: [], deduplicated: true});
             }
+            const currency = normalizeCurrency(input?.currency, recipients[0].currency);
+            const allocated = recipients.reduce((sum, row) => sum + convertAmountCents(row.amountCents, row.currency, currency, rates), 0);
+            const totalCents = Number.isInteger(input?.totalCents) && input.totalCents > 0 ? input.totalCents : allocated;
             const record = {
               id: `REQ-${secret().slice(0, 6).toUpperCase()}`,
               clientRequestId: clientRequestId || randomUUID(),
@@ -472,11 +506,12 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
               title: typeof input?.title === 'string' && input.title.trim() ? input.title.trim().slice(0, 100) : (String(input?.merchant || '').trim() || 'Money request'),
               merchant: typeof input?.merchant === 'string' && input.merchant.trim() ? input.merchant.trim().slice(0, 100) : 'Personal request',
               billDate: typeof input?.billDate === 'string' ? input.billDate.trim().slice(0, 40) : '',
-              currency: normalizeCurrency(input?.currency, recipients[0]?.currency || 'USD'),
+              currency,
               items,
               taxCents: Math.max(0, Number.isInteger(input?.taxCents) ? input.taxCents : 0),
               tipCents: Math.max(0, Number.isInteger(input?.tipCents) ? input.tipCents : 0),
-              totalCents: Math.max(0, Number.isInteger(input?.totalCents) ? input.totalCents : recipients.reduce((s, r) => s + r.amountCents, 0)),
+              totalCents,
+              ownShareCents: Math.max(0, totalCents - allocated),
               evidenceImageDataUrl: evidence,
               transcript: typeof input?.transcript === 'string' ? input.transcript.trim().slice(0, 1000) : '',
               channel,

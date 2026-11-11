@@ -1,4 +1,4 @@
-# SplitSync AI
+# PayPal Hackathon
 
 A Flutter app and responsive website for shared purchases, now connected through a local PayPal Sandbox backend.
 
@@ -13,7 +13,7 @@ cp -n .env.example .env
 npm start
 ```
 
-Open http://localhost:3000, enter the SplitSync organizer key from the terminal, and confirm the purchase split. The server calculates Maya $70, Arun $40 and Leah $40 for the $150 bill. Each participant gets a private link. PayPal approval occurs on PayPal's Sandbox screen; completed captures update the shared ledger.
+Open http://localhost:3000. Home starts in Demo mode. To connect the organizer backend, open **Profile → Connect backend** and enter the organizer key from the terminal. For the Sandbox merchant walkthrough, scan or paste `#purchase/SS-001` and confirm the purchase split. The server calculates Maya $70, Arun $40 and Leah $40 for the $150 bill. Each participant gets a private link. PayPal approval occurs on PayPal's Sandbox screen; completed captures update the shared ledger.
 
 Secrets belong only in `server/.env`. Do not put PayPal credentials in Flutter, browser JavaScript or GitHub. Sandbox only: there is no live-payment switch.
 
@@ -22,25 +22,28 @@ Secrets belong only in `server/.env`. Do not put PayPal credentials in Flutter, 
 - `server/`: Node.js 22+ backend, PayPal client, durable local ledger, and mocked payment tests. No npm dependencies.
 - `website/dist/`: responsive organizer and payer interface served by the backend.
 - `website/test/demo.cjs`: static visual-demo regression checks.
-- `flutter_app/`: companion Flutter source; connect it to the backend using its settings icon. Generate platform folders in this directory if needed, rather than at the repository root.
+- `flutter_app/`: companion Flutter source; connect it to the backend from its Profile tab. Generate platform folders in this directory if needed, rather than at the repository root.
 - `previews/`: screenshots. The original five frames depict the earlier visual demo, whose statuses and receipt were simulated; `backend-checkout.jpg` shows the connected checkout awaiting credentials.
 
 ## Flutter
 
-Use Flutter 3.35+ and its bundled Dart SDK. From `flutter_app`:
+Use Flutter 3.47+ and its bundled Dart SDK. From `flutter_app`:
 
 ```sh
 flutter create --platforms=android,ios,web --project-name splitsync .
 flutter pub get
 flutter analyze
-flutter run -d chrome --web-port=5173 --dart-define=PAYER_ORIGIN=http://localhost:3000
+flutter run -d chrome --web-hostname=localhost --web-port=5173 --dart-define=PAYER_ORIGIN=http://localhost:3000
 ```
 
-Do not rerun `flutter create` if the needed platform folders already exist. Add `NSCameraUsageDescription` to iOS `Runner/Info.plist` for camera scanning, and verify Android camera/Internet permissions. Use a reachable HTTPS backend for physical phones. The settings key is the SplitSync organizer access key, not a PayPal secret or buyer password.
+Do not rerun `flutter create` if the needed platform folders already exist. On iOS, declare camera, photo library, microphone, and speech-recognition usage descriptions in `Runner/Info.plist`. Android declares camera, Internet, and microphone permissions in the app manifest. Use a reachable HTTPS backend for physical phones. Profile accepts the organizer access key from the server terminal. The Flutter web origin must match `FLUTTER_WEB_ORIGIN` on the server.
 
-## Visual demo and later workflows
+## Hackathon walkthrough
 
-Serving `website/dist` with a static server still opens the original visual walkthrough. It is separate from backend checkout and cannot process payments. The connected app uses DeepSeek to propose the lamp owner within the fixed demo bill, and Chatterbox reads the reviewed split aloud. The static demo still uses a fixed allocation rule. Rent and shop remain later-workflow demos. Medfarm assets were not provided, so the visual treatment follows the attached SplitSync mockups.
+- In **Ask SplitSync**, type or dictate “Allen, send him 20 dollars saying thanks for coffee.” Review USD 20 and the GBP 15.80 fixture estimate, then confirm to create a Demo receipt in Activity.
+- Create a demo request from Home. Its fictional payment advances automatically. Connected reimbursements can also create private share links.
+- Start **Scan bill** with a camera, upload, or manual entry. Use **Rent** for a blank household draft or **Store** for sample shopping and cart splitting.
+- Open `/#dev-reset` to clear fictional web demo data. For the local Flutter ledger, launch with `--dart-define=RESET_LOCAL_DEMO=true` for the reset run. Merchant orders and personal reimbursement links are separate.
 
 The backend is intended for one household's Sandbox testing with one Node process and a persistent ledger. Production account management, refunds, disputes, multi-merchant onboarding, payouts and rent payments are outside this implementation. See [VALIDATION.md](VALIDATION.md) for verification limits.
 

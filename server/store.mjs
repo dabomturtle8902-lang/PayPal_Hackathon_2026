@@ -7,12 +7,51 @@ export const secret = () => randomBytes(24).toString('hex');
 
 export const FX_RATES_USD = Object.freeze({
   USD: 1,
-  GBP: 0.79,
-  CAD: 1.39,
-  EUR: 0.92,
-  JPY: 153.5,
-  INR: 84.4,
+  GBP: 0.74501,
+  CAD: 1.4136,
+  EUR: 0.89174,
+  JPY: 158.18,
+  INR: 93.93,
 });
+
+export const FX_REFERENCE_DATE = '2026-11-10';
+
+export function createExchangeRateLoader(fetchRates = fetch) {
+  let snapshot = {rates: FX_RATES_USD, date: FX_REFERENCE_DATE};
+  let expires = 0;
+  let pending;
+  return function loadRates() {
+    if (Date.now() < expires) return Promise.resolve(snapshot);
+    if (pending) return pending;
+    pending = (async () => {
+      try {
+        const quotes = Object.keys(FX_RATES_USD).filter(code => code !== 'USD');
+        const response = await fetchRates(
+          'https://api.frankfurter.dev/v2/rates?base=USD&providers=ECB&quotes=' + quotes.join(','),
+          {signal: AbortSignal.timeout(4500)},
+        );
+        if (!response.ok) throw new Error('Exchange rates are unavailable');
+        const rows = await response.json();
+        const date = rows[0]?.date;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < snapshot.date) {
+          throw new Error('Exchange rates are out of date');
+        }
+        const rates = {USD: 1};
+        for (const code of quotes) {
+          const row = rows.find(item => item.quote === code && item.base === 'USD' && item.date === date);
+          if (!Number.isFinite(row?.rate) || row.rate <= 0) throw new Error('Missing exchange rate');
+          rates[code] = row.rate;
+        }
+        snapshot = {rates, date};
+        expires = Date.now() + 15 * 60 * 1000;
+      } catch {
+        expires = Date.now() + 60 * 1000;
+      }
+      return snapshot;
+    })().finally(() => { pending = undefined; });
+    return pending;
+  };
+}
 
 export const CURRENCY_SYMBOLS = Object.freeze({
   USD: '$',
@@ -28,27 +67,27 @@ export function normalizeCurrency(code, fallback = 'USD') {
   return FX_RATES_USD[c] ? c : fallback;
 }
 
-export function convertAmountCents(amountCents, fromCurrency = 'USD', toCurrency = 'USD') {
+export function convertAmountCents(amountCents, fromCurrency = 'USD', toCurrency = 'USD', rates = FX_RATES_USD) {
   const from = normalizeCurrency(fromCurrency, 'USD');
   const to = normalizeCurrency(toCurrency, 'USD');
   const raw = Math.max(0, Number(amountCents) || 0);
   if (from === to) {
     return to === 'JPY' ? Math.round(raw / 100) * 100 : Math.round(raw);
   }
-  const usdMajor = (raw / 100) / FX_RATES_USD[from];
-  const targetMajor = usdMajor * FX_RATES_USD[to];
+  const usdMajor = (raw / 100) / rates[from];
+  const targetMajor = usdMajor * rates[to];
   return to === 'JPY' ? Math.round(targetMajor) * 100 : Math.round(targetMajor * 100);
 }
 
-export function fxQuote(amountCents, fromCurrency = 'USD', toCurrency = 'USD') {
+export function fxQuote(amountCents, fromCurrency = 'USD', toCurrency = 'USD', rates = FX_RATES_USD) {
   const sourceCurrency = normalizeCurrency(fromCurrency, 'USD');
   const targetCurrency = normalizeCurrency(toCurrency, sourceCurrency);
   const sourceAmountCents = sourceCurrency === 'JPY'
     ? Math.round((Number(amountCents) || 0) / 100) * 100
     : Math.max(0, Math.round(Number(amountCents) || 0));
-  const targetAmountCents = convertAmountCents(sourceAmountCents, sourceCurrency, targetCurrency);
-  const inrEquivalentCents = convertAmountCents(sourceAmountCents, sourceCurrency, 'INR');
-  const rate = Number((FX_RATES_USD[targetCurrency] / FX_RATES_USD[sourceCurrency]).toFixed(targetCurrency === 'JPY' ? 2 : 4));
+  const targetAmountCents = convertAmountCents(sourceAmountCents, sourceCurrency, targetCurrency, rates);
+  const inrEquivalentCents = convertAmountCents(sourceAmountCents, sourceCurrency, 'INR', rates);
+  const rate = rates[targetCurrency] / rates[sourceCurrency];
   return {
     sourceAmountCents,
     sourceCurrency,
@@ -56,7 +95,6 @@ export function fxQuote(amountCents, fromCurrency = 'USD', toCurrency = 'USD') {
     targetCurrency,
     inrEquivalentCents,
     rate,
-    demoQuote: true,
   };
 }
 

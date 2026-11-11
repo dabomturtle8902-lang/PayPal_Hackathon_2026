@@ -1,4 +1,6 @@
-# SplitSync AI Design Contract (Payment App & Voice Assistant Spec)
+# PayPal Hackathon Design Contract (Payment App & Voice Assistant Spec)
+
+PayPal Hackathon is the public app name. The PayPal icon appears in the app identity and launcher assets. Keep the existing Ask SplitSync label for the assistant. Demo contact payments and verified PayPal Sandbox merchant checkout have separate status and settlement.
 
 ## 1. Current Audit & Strategic Shifts
 
@@ -6,7 +8,7 @@ Compared against the prior prototype (`SplitSync-AI`) and visual reference (`med
 
 - **Clean Start & Separate Ledgers**: Empty initial Home activity, empty payment/request sheets, empty Ask SplitSync composer, unopened QR scanner camera, and blank Rent creator. Demo transfers and demo requests run in their own `Demo mode` ledger (`demoTransactions` + `reimbursements`), completely separate from verified PayPal Sandbox Orders v2 merchant checkout (`SS-001`, marked **`Sandbox`**).
 - **Zero Chrome Clutter**: Main tabs (`Home`, `Activity`, `Store`, `Profile`) use bottom nav on portrait phones (`<= 680px` web / `< 720px` Flutter) and a compact left navigation rail on desktop & short landscape (`<= 540px` height & `>= 540px` width). No top header, breadcrumb strip, step progress bars, duplicate headers, or footer chrome. Focused tasks show one clean `Back` button and screen title.
-- **No Presenter Clutter Buttons**: Removed **"Test failed"**, **"Test camera denied"**, **"Test camera unavailable"**, **"Test clarify"**, **"Simulate error"**, and manual **"Mark Paid"** demo-override controls. Permissions, unreadable fields, and clarification prompts trigger naturally from real browser/device states and live inputs, while presenter reset (**`Reset demo session`**) lives inside **Profile** and `#dev-reset`.
+- **No Presenter Clutter Buttons**: Removed **"Test failed"**, **"Test camera denied"**, **"Test camera unavailable"**, **"Test clarify"**, **"Simulate error"**, and manual **"Mark Paid"** demo-override controls. Permissions, unreadable fields, and clarification prompts trigger naturally from real browser/device states and live inputs, while presenter reset (**`Reset demo session`**) uses the separate `#dev-reset` entry on the web or the local Flutter reset flag.
 
 ## 2. Visual System (Medfarm Translation Kept Intact)
 
@@ -16,10 +18,10 @@ Compared against the prior prototype (`SplitSync-AI`) and visual reference (`med
 
 ## 3. Navigation & Short Everyday Routes
 
-1. **`Home` (`#home`)**: Compact identity row (`Hello, Leah` + `Demo mode`), primary quick actions right at the top (**`Scan & pay`**, **`Request money`**, **`Send money`**, and compact **`Ask SplitSync`** entry), quick international contact row (`🇬🇧 Allen`, `🇺🇸 Maya`, `🇨🇦 Arun`, `🇩🇪 Sofia`, `🇯🇵 Yuki`), latest Activity rows immediately below, Household Actions (**`Rent`**, **`Split expense`**), and a compact 2-item `splitStore` shelf linking to **Store**.
+1. **`Home` (`#home`)**: Compact identity row (`Hello, Leah` + `Demo mode`), primary quick actions right at the top (**`Scan & pay`**, **`Request money`**, **`Send money`**, and compact **`Ask SplitSync`** entry), latest Activity rows immediately below, then the international contact row (`🇬🇧 Allen`, `🇺🇸 Maya`, `🇨🇦 Arun`, `🇩🇪 Sofia`, `🇯🇵 Yuki`), Household Actions (**`Rent`**, **`Split expense`**), and a compact 2-item `splitStore` shelf linking to **Store**.
 2. **`Activity` (`#activity`)**: Searchable & filterable unified ledger (`All`, `Waiting`, `Received`, `Transfers`, `Sandbox`) showing counterparty, flag/currency amount, date, and single-source status (`Waiting for payment` -> `Payment received from <Name>`, `Demo transfer`, or `SS-001` Sandbox status). Tapping opens full Receipt / Detail / Share / QR.
 3. **`Store` (`#store`, `#product/:id`, `#cart`)**: `splitStore` (`Sample inventory · Demo mode`) with persistent visible Cart chip, category filters, search, seller labels, external retailers, and Product -> Shared Cart -> optional **Split this purchase** handoff.
-4. **`Profile` (`#profile`)**: Organizer connection (`Connected Sandbox` / `Demo mode` login & server URL), saved International Contacts directory, Voice autoplay default, provider capabilities (AI, STT, Chatterbox TTS, PayPal Sandbox, Delivery), and presenter **`Reset demo session`** (`#dev-reset` also resets cleanly).
+4. **`Profile` (`#profile`)**: Organizer connection (`Connected Sandbox` / `Demo mode` login & server URL), saved International Contacts directory, Voice autoplay default, provider capabilities (AI, STT, Chatterbox TTS, PayPal Sandbox, Delivery) and delivery capabilities.
 
 ## 4. International Contacts, FX Quotes & Self-Settling Demo Flows
 

@@ -7,11 +7,13 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:splitsync/main.dart';
+import 'package:splitsync/models/splitsync_models.dart';
 
 MockClient mockBackend({
   bool aiUnavailable = false,
   bool ttsUnavailable = false,
   bool failEmailDelivery = true,
+  void Function(String)? onVoice,
 }) {
   var lamp = 'Maya';
   var published = false;
@@ -21,7 +23,7 @@ MockClient mockBackend({
     final auth = request.headers['authorization'];
     if (auth != 'Bearer valid-organizer-key') {
       return http.Response(
-        jsonEncode({'error': 'Invalid SplitSync organizer key.'}),
+        jsonEncode({'error': 'Invalid organizer key.'}),
         401,
       );
     }
@@ -56,9 +58,24 @@ MockClient mockBackend({
             ],
           },
           'contacts': [
-            {'id': 'maya', 'name': 'Maya', 'handle': 'maya@house.local', 'note': 'Roommate'},
-            {'id': 'arun', 'name': 'Arun', 'handle': 'arun@house.local', 'note': 'Roommate'},
-            {'id': 'leah', 'name': 'Leah', 'handle': 'leah@house.local', 'note': 'Organizer'},
+            {
+              'id': 'maya',
+              'name': 'Maya',
+              'handle': 'maya@house.local',
+              'note': 'Roommate',
+            },
+            {
+              'id': 'arun',
+              'name': 'Arun',
+              'handle': 'arun@house.local',
+              'note': 'Roommate',
+            },
+            {
+              'id': 'leah',
+              'name': 'Leah',
+              'handle': 'leah@house.local',
+              'note': 'Organizer',
+            },
           ],
           'reimbursements': [],
           'providers': {
@@ -81,8 +98,8 @@ MockClient mockBackend({
       final owner = instr.contains('leah')
           ? 'Leah'
           : instr.contains('arun')
-              ? 'Arun'
-              : 'Maya';
+          ? 'Arun'
+          : 'Maya';
       return http.Response(jsonEncode({'lamp': owner}), 200);
     }
 
@@ -95,7 +112,10 @@ MockClient mockBackend({
 
     if (path == '/api/organizer/extract-bill') {
       if (aiUnavailable) {
-        return http.Response(jsonEncode({'error': 'Vision AI unavailable.'}), 502);
+        return http.Response(
+          jsonEncode({'error': 'Vision AI unavailable.'}),
+          502,
+        );
       }
       return http.Response(
         jsonEncode({
@@ -155,9 +175,16 @@ MockClient mockBackend({
       );
     }
 
-    if (path == '/api/organizer/read-split' || path == '/api/organizer/read-text') {
+    if (path == '/api/organizer/read-split' ||
+        path == '/api/organizer/read-text') {
       if (ttsUnavailable) {
-        return http.Response(jsonEncode({'error': 'Chatterbox unavailable.'}), 502);
+        return http.Response(
+          jsonEncode({'error': 'Chatterbox unavailable.'}),
+          502,
+        );
+      }
+      if (path.endsWith('read-text')) {
+        onVoice?.call((jsonDecode(request.body) as Map)['text'] as String);
       }
       return http.Response(jsonEncode({'audio': base64Encode(wavBytes)}), 200);
     }
@@ -197,7 +224,9 @@ MockClient mockBackend({
             'totalCents': body['totalCents'] ?? 4200,
             'recipients': recs,
           },
-          'deliveryOutcomes': [{'ok': !failed}],
+          'deliveryOutcomes': [
+            {'ok': !failed},
+          ],
         }),
         200,
       );
@@ -208,162 +237,398 @@ MockClient mockBackend({
 }
 
 void main() {
-  testWidgets('Welcome shows invalid key error and opens PhonePe Hub on sign in', (
-    WidgetTester tester,
-  ) async {
-    await tester.pumpWidget(
-      SplitSync(httpClient: mockBackend(), enableLiveCamera: false),
-    );
-    await tester.enterText(find.byType(TextField).first, 'wrong-key');
-    await tester.tap(find.text('Sign in as organizer'));
-    await tester.pumpAndSettle();
-    expect(find.text('Invalid organizer key'), findsOneWidget);
-
-    await tester.enterText(find.byType(TextField).first, 'valid-organizer-key');
-    await tester.tap(find.text('Sign in as organizer'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Scan & Pay'), findsOneWidget);
-    expect(find.text('Request Money'), findsOneWidget);
-    expect(find.text('Scan Bill'), findsOneWidget);
-    expect(find.text('Talk to SplitSync'), findsOneWidget);
+  test('receipt splits leave the remainder with the organizer', () {
+    final bill = ExtractedBillDraft.blank()
+      ..currency = 'JPY'
+      ..totalCents = 100000;
+    final rows = equalReceiptDraft(
+      'Split this receipt equally between Maya, Arun and me.',
+      bill,
+      kDefaultContacts,
+    )!;
+    expect(rows.map((row) => row.amountCents), [33300, 33300, 33400]);
+    expect(rows.last.contactId, 'leah');
   });
 
-  testWidgets('Scan Bill -> extract -> voice dictate -> Chatterbox -> failed Email stays Created', (
-    WidgetTester tester,
-  ) async {
-    tester.view.devicePixelRatio = 1.0;
-    tester.view.physicalSize = const Size(1280, 860);
-    addTearDown(tester.view.reset);
+  test('the amount currency comes from beside the amount', () {
+    final usd = parseStaticTranscript(
+      r'Send $20 to Yuki in JPY.',
+      kDefaultContacts,
+    ).single;
+    final jpy = parseStaticTranscript(
+      'Send ¥1,200 to Maya.',
+      kDefaultContacts,
+    ).single;
+    expect(usd.currency, 'USD');
+    expect(usd.amountCents, 2000);
+    expect(jpy.currency, 'JPY');
+    expect(jpy.amountCents, 120000);
+  });
 
-    Uint8List? spokenAudio;
-    await tester.pumpWidget(
-      SplitSync(
-        httpClient: mockBackend(failEmailDelivery: true),
-        enableLiveCamera: false,
-        onPlayAudio: (bytes) async => spokenAudio = bytes,
-        onDictateSpeech: () async =>
-            'Ask Maya for twenty dollars for dinner and Arun for fifteen for drinks.',
-      ),
-    );
-
+  Future<void> connect(WidgetTester tester) async {
+    await tester.tap(find.text('Profile'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Sign in with organizer key'));
+    await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField).first, 'valid-organizer-key');
     await tester.tap(find.text('Sign in as organizer'));
     await tester.pumpAndSettle();
+  }
 
-    await tester.tap(find.text('Scan Bill'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Use bundled sample receipt'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Extract bill details'));
-    await tester.pumpAndSettle();
-    expect(find.text('Olive Kitchen'), findsOneWidget);
-
-    await tester.ensureVisible(find.text('Tap mic to speak'));
-    await tester.tap(find.text('Tap mic to speak'));
-    await tester.pumpAndSettle();
-    expect(
-      find.text('Ask Maya for twenty dollars for dinner and Arun for fifteen for drinks.'),
-      findsWidgets,
+  testWidgets('Microphone failure leaves typing and aligned Send available', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      SplitSync(
+        httpClient: mockBackend(),
+        enableLiveCamera: false,
+        onDictateSpeech: () async => throw StateError('Microphone denied'),
+      ),
     );
-
-    await tester.ensureVisible(find.text('Review spoken request'));
-    await tester.tap(find.text('Review spoken request'));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('Ask AI'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Microphone'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Microphone unavailable'), findsOneWidget);
+    final input = find.byType(TextField);
+    final send = find.byTooltip('Send');
+    expect(tester.getCenter(input).dy, closeTo(tester.getCenter(send).dy, 1));
+    await tester.enterText(input, 'Ask Maya for 20 dollars.');
+    await tester.pumpAndSettle();
+    await tester.tap(send);
+    await tester.pumpAndSettle();
+    expect(find.text('Ask Maya for 20 dollars.'), findsOneWidget);
+    expect(find.textContaining('Maya owes'), findsOneWidget);
+  });
 
-    expect(find.textContaining('Unallocated balance'), findsOneWidget);
-    expect(find.text('\$7.00 USD'), findsOneWidget);
-    expect(
-      find.textContaining('I’ll request \$20 from Maya for dinner and \$15 from Arun for drinks'),
-      findsOneWidget,
+  testWidgets('Clean Home and manual international request need no AI', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      SplitSync(
+        httpClient: mockBackend(aiUnavailable: true),
+        enableLiveCamera: false,
+      ),
     );
-
-    await tester.ensureVisible(find.text('Hear reply'));
-    await tester.tap(find.text('Hear reply'));
     await tester.pumpAndSettle();
-    expect(spokenAudio, isNotNull);
-
-    await tester.ensureVisible(find.byType(DropdownButtonFormField<String>));
-    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    expect(find.text('PayPal Hackathon'), findsOneWidget);
+    expect(find.textContaining('No activity yet'), findsOneWidget);
+    expect(find.text('Scan & pay'), findsOneWidget);
+    await tester.tap(find.text('Request money'));
     await tester.pumpAndSettle();
-    await tester.tap(find.textContaining('Email gateway').last);
+    await tester.enterText(find.byType(TextField).first, 'allen');
+    await tester.tap(find.text('Allen'));
     await tester.pumpAndSettle();
-
-    await tester.ensureVisible(find.text('Confirm & create requests'));
-    await tester.tap(find.text('Confirm & create requests'));
+    await tester.enterText(find.byType(TextField).first, '20');
     await tester.pumpAndSettle();
-
-    expect(find.text('Created'), findsWidgets);
-    expect(find.text('Failed'), findsWidgets);
-    expect(find.text('Sent'), findsNothing);
+    await tester.tap(find.text('Review request'));
+    await tester.pumpAndSettle();
+    expect(find.text('20.00 GBP'), findsOneWidget);
+    await tester.tap(find.text('Create practice requests'));
+    await tester.pumpAndSettle();
+    expect(find.text('Waiting for payment'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('Store -> product -> shared cart -> Split with people works & preserves portrait/landscape', (
-    WidgetTester tester,
-  ) async {
-    tester.view.devicePixelRatio = 1.0;
-    tester.view.physicalSize = const Size(390, 844);
-    addTearDown(tester.view.reset);
+  testWidgets(
+    'Typed and edited microphone turns auto-play a validated reply in the same conversation',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1280, 860);
+      addTearDown(tester.view.reset);
+      final played = <Uint8List>[];
+      final voiced = <String>[];
+      await tester.pumpWidget(
+        SplitSync(
+          httpClient: mockBackend(onVoice: voiced.add),
+          enableLiveCamera: false,
+          onPlayAudio: (bytes) async => played.add(bytes),
+          onDictateSpeech: () async =>
+              'Ask Maya for twenty dollars for dinner and Arun for fifteen for drinks.',
+        ),
+      );
+      await connect(tester);
+      await tester.tap(find.text('Ask AI'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byType(TextField).last,
+        'Ask Maya for 20 and Arun for 15.',
+      );
+      await tester.pump();
+      await tester.tap(find.byTooltip('Send'));
+      await tester.pumpAndSettle();
+      expect(played, hasLength(1));
+      expect(voiced.single, contains('Maya owes 20.00 USD'));
+      expect(find.text(voiced.single), findsOneWidget);
+      expect(find.text('Review requests'), findsOneWidget);
 
-    await tester.pumpWidget(
-      SplitSync(httpClient: mockBackend(), enableLiveCamera: false),
+      await tester.ensureVisible(find.byTooltip('Microphone'));
+      await tester.tap(find.byTooltip('Microphone'));
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('Ask Maya for twenty dollars'),
+        findsOneWidget,
+      );
+      await tester.pump();
+      await tester.tap(find.byTooltip('Send'));
+      await tester.pumpAndSettle();
+      expect(played, hasLength(2));
+      expect(find.text('Type, dictate, or attach a receipt'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Allen voice instruction shows the USD amount, GBP quote, and one demo receipt',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(667, 375);
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        SplitSync(httpClient: mockBackend(), enableLiveCamera: false),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(NavigationRail), findsOneWidget);
+      await tester.ensureVisible(find.text('Ask AI'));
+      await tester.tap(find.text('Ask AI'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byType(TextField).last,
+        'Allen, send him 20 dollars saying thanks for coffee.',
+      );
+      await tester.ensureVisible(find.byTooltip('Send'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Send'));
+      await tester.pumpAndSettle();
+      expect(find.text('Review payment'), findsOneWidget);
+      expect(find.text('14.90 GBP'), findsOneWidget);
+      await tester.ensureVisible(find.text('Pay'));
+      await tester.tap(find.text('Pay'));
+      await tester.pumpAndSettle();
+      expect(find.text('Payment receipt'), findsOneWidget);
+      expect(find.text('Paid Allen'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final connected in [false, true]) {
+    testWidgets(
+      'Ask appends and pays four recipients with connected backend = $connected',
+      (tester) async {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = const Size(390, 844);
+        addTearDown(tester.view.reset);
+        final base = mockBackend(ttsUnavailable: true);
+        var parseCalls = 0;
+        final client = MockClient((request) async {
+          if (request.url.path.endsWith('/parse-request')) {
+            final body = jsonDecode(request.body) as Map<String, dynamic>;
+            expect(
+              (body['currentDraft'] as List).length,
+              [0, 2, 4][parseCalls++],
+            );
+            final rows = parseStaticTranscript(
+              body['transcript'] as String,
+              kDefaultContacts,
+            );
+            return http.Response(
+              jsonEncode({
+                'intent': 'request',
+                'recipients': rows
+                    .map(
+                      (r) => {
+                        'name': r.name,
+                        'contactId': r.contactId,
+                        'known': r.known,
+                        'amountCents': r.amountCents,
+                        'currency': r.currency,
+                        'reason': r.reason,
+                      },
+                    )
+                    .toList(),
+              }),
+              200,
+            );
+          }
+          if (request.url.path.endsWith('/demo-pay')) {
+            final body = jsonDecode(request.body) as Map<String, dynamic>;
+            expect(body['payments'], hasLength(4));
+            return http.Response(
+              jsonEncode({
+                'transactions': [
+                  for (final row in body['payments'] as List)
+                    {
+                      ...row as Map,
+                      'id': row['clientTxId'],
+                      'recipientName': kDefaultContacts
+                          .firstWhere((c) => c.id == row['contactId'])
+                          .name,
+                      'flag': '',
+                      'createdAt': DateTime.now().toIso8601String(),
+                    },
+                ],
+              }),
+              200,
+            );
+          }
+          final response = request.method == 'GET'
+              ? await base.get(request.url, headers: request.headers)
+              : await base.post(
+                  request.url,
+                  headers: request.headers,
+                  body: request.bodyBytes,
+                );
+          if (request.url.path.endsWith('/state')) {
+            final json = jsonDecode(response.body) as Map<String, dynamic>;
+            json['contacts'] = kDefaultContacts
+                .map(
+                  (c) => {
+                    'id': c.id,
+                    'name': c.name,
+                    'currency': c.currency,
+                    'flag': c.flag,
+                    'country': c.country,
+                  },
+                )
+                .toList();
+            return http.Response(
+              jsonEncode(json),
+              200,
+              headers: {'content-type': 'application/json; charset=utf-8'},
+            );
+          }
+          return response;
+        });
+        await tester.pumpWidget(
+          SplitSync(httpClient: client, enableLiveCamera: false),
+        );
+        await tester.pumpAndSettle();
+        if (connected) {
+          await connect(tester);
+        }
+        await tester.tap(find.text('Ask AI'));
+        await tester.pumpAndSettle();
+
+        Future<void> ask(String message) async {
+          await tester.enterText(find.byType(TextField).last, message);
+          await tester.pump();
+          await tester.tap(find.byTooltip('Send'));
+          await tester.pumpAndSettle();
+        }
+
+        await ask(r'Give Maya $20 and Arun $15.');
+        expect(find.text('Review 2 payments'), findsOneWidget);
+        await ask(r'And Allen $12 and Sofia $18.');
+        expect(find.text('Review 4 payments'), findsOneWidget);
+        await ask(r'Make Maya $24.');
+        expect(find.text('Review 4 payments'), findsOneWidget);
+        expect(find.text('Maya'), findsOneWidget);
+        expect(find.text('24.00 USD'), findsOneWidget);
+        expect(find.text('20.00 USD'), findsNothing);
+
+        await tester.tap(find.text('Review 4 payments'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('Back'));
+        await tester.pumpAndSettle();
+        expect(find.text('Review 4 payments'), findsOneWidget);
+        await tester.ensureVisible(find.text('Review 4 payments'));
+        await tester.tap(find.text('Review 4 payments'));
+        await tester.pumpAndSettle();
+        expect(find.text('69.00 USD'), findsOneWidget);
+        await tester.ensureVisible(find.text('Confirm practice payments'));
+        await tester.tap(find.text('Confirm practice payments'));
+        await tester.pumpAndSettle();
+        expect(find.text('4 practice payments completed'), findsOneWidget);
+        for (final name in ['Maya', 'Arun', 'Allen', 'Sofia']) {
+          expect(find.textContaining(name), findsOneWidget);
+        }
+        expect(tester.takeException(), isNull);
+      },
     );
-    await tester.ensureVisible(find.text('Explore static preview (no server)'));
-    await tester.tap(find.text('Explore static preview (no server)'));
-    await tester.pumpAndSettle();
-    expect(find.byType(NavigationBar), findsOneWidget);
-    expect(tester.takeException(), isNull, reason: 'home portrait 390x844');
+  }
 
-    await tester.tap(find.text('Store'));
-    await tester.pumpAndSettle();
-    expect(tester.takeException(), isNull, reason: 'store portrait 390x844');
+  testWidgets(
+    'Receipt review keeps editing and split actions separate on a small screen',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(320, 568);
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        SplitSync(httpClient: mockBackend(), enableLiveCamera: false),
+      );
+      await tester.pumpAndSettle();
 
-    await tester.ensureVisible(find.text('View').first);
-    await tester.tap(find.text('View').first);
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Add to shared purchase'));
-    await tester.tap(find.text('Add to shared purchase'));
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Split with people'));
-    await tester.tap(find.text('Split with people'));
-    await tester.pumpAndSettle();
+      final scan = find.text('Scan bill');
+      await tester.ensureVisible(scan);
+      await tester.tap(scan);
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Use sample receipt'));
+      await tester.tap(find.text('Use sample receipt'));
+      await tester.pumpAndSettle();
+      final extract = find.text('Extract bill details');
+      await tester.ensureVisible(extract);
+      await tester.tap(extract);
+      await tester.pumpAndSettle();
 
-    const customDraft = 'Draft retained across orientation change';
-    await tester.enterText(find.byType(TextField).first, customDraft);
+      expect(find.text('Review receipt'), findsOneWidget);
+      expect(find.text('42.00 USD'), findsOneWidget);
+      final split = find.text('Split in Ask AI');
+      expect(split.hitTestable(), findsOneWidget);
+      expect(find.text('Pasta Dinner Bowl'), findsNothing);
+      final currency = find.byType(DropdownButtonFormField<String>);
+      await tester.ensureVisible(currency);
+      await tester.tap(currency);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('CAD').last);
+      await tester.pumpAndSettle();
+      expect(find.text('42.00 CAD'), findsOneWidget);
+      final items = find.text('Line items (3)');
+      await tester.ensureVisible(items);
+      await tester.tap(items);
+      await tester.pumpAndSettle();
+      expect(find.text('Pasta Dinner Bowl'), findsOneWidget);
+      expect(split.hitTestable(), findsOneWidget);
 
-    tester.view.physicalSize = const Size(667, 375);
-    await tester.pumpAndSettle();
-    expect(find.text(customDraft), findsOneWidget);
-    expect(tester.takeException(), isNull, reason: 'request-review landscape 667x375');
+      await tester.tap(split);
+      await tester.pumpAndSettle();
+      expect(find.text('Ask AI'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
-    // Return home in short landscape and verify compact rail renders cleanly
-    await tester.tap(find.byIcon(Icons.arrow_back_rounded).first);
-    await tester.pumpAndSettle();
-    await tester.tap(find.byIcon(Icons.arrow_back_rounded).first);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Home'));
-    await tester.pumpAndSettle();
-    expect(find.byType(NavigationRail), findsOneWidget);
-    expect(tester.takeException(), isNull, reason: 'home short landscape 667x375');
-
-    // Also verify Rent shortcut, Activity tab, and Profile tab render cleanly in short landscape
-    await tester.ensureVisible(find.text('Rent (Preview)'));
-    await tester.tap(find.text('Rent (Preview)'));
-    await tester.pumpAndSettle();
-    expect(find.text('Monthly rent draft'), findsOneWidget);
-    expect(tester.takeException(), isNull, reason: 'rent short landscape 667x375');
-
-    await tester.tap(find.byIcon(Icons.arrow_back_rounded).first);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Activity'));
-    await tester.pumpAndSettle();
-    expect(find.text('Reimbursement requests, SS-001 orders, and Rent.'), findsOneWidget);
-    expect(tester.takeException(), isNull, reason: 'activity short landscape 667x375');
-
-    await tester.tap(find.text('Profile'));
-    await tester.pumpAndSettle();
-    expect(find.text('Profile & Settings'), findsOneWidget);
-    expect(tester.takeException(), isNull, reason: 'profile short landscape 667x375');
-  });
+  testWidgets(
+    'Store keeps the cart and hands the split into the conversation',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(390, 844);
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        SplitSync(httpClient: mockBackend(), enableLiveCamera: false),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Store'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('View').first);
+      await tester.tap(find.text('View').first);
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Add to shared purchase'));
+      await tester.tap(find.text('Add to shared purchase'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Split this purchase'));
+      await tester.tap(find.text('Split this purchase'));
+      await tester.pumpAndSettle();
+      expect(find.text('Type, dictate, or attach a receipt'), findsOneWidget);
+      tester.view.physicalSize = const Size(667, 375);
+      await tester.pumpAndSettle();
+      expect(find.text('Review requests'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

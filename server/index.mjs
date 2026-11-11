@@ -1,7 +1,7 @@
 import {resolve, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {PayPal} from './paypal.mjs';
-import {Store, secret} from './store.mjs';
+import {Store, secret, createExchangeRateLoader} from './store.mjs';
 import {createNvidia} from './nvidia.mjs';
 import {createApp} from './app.mjs';
 const here=dirname(fileURLToPath(import.meta.url));
@@ -13,7 +13,7 @@ const organizerToken=process.env.ORGANIZER_TOKEN||secret();
 if(organizerToken.length<24)throw new Error('ORGANIZER_TOKEN must have at least 24 characters.');
 const store=await new Store(resolve(process.env.DATA_FILE||resolve(here,'data/sandbox-ledger.json'))).init();
 const paypal=new PayPal({clientId:process.env.PAYPAL_CLIENT_ID,clientSecret:process.env.PAYPAL_CLIENT_SECRET,webhookId:process.env.PAYPAL_WEBHOOK_ID});
-const {server}=createApp({store,paypal,nvidia:createNvidia({key:process.env.NVIDIA_API_KEY,python:process.env.NVIDIA_PYTHON}),organizerToken,baseUrl,flutterOrigin:process.env.FLUTTER_WEB_ORIGIN||'',staticDir:resolve(here,'../website/dist')});
+const {server}=createApp({store,paypal,nvidia:createNvidia({key:process.env.NVIDIA_API_KEY,python:process.env.NVIDIA_PYTHON}),organizerToken,baseUrl,loadRates:createExchangeRateLoader(),flutterOrigin:process.env.FLUTTER_WEB_ORIGIN||'',localOrganizerAutoLogin:process.env.LOCAL_ORGANIZER_AUTO_LOGIN==='true',staticDir:resolve(here,'../website/dist')});
 server.listen(port,process.env.HOST||'127.0.0.1',()=>{
   console.log(`SplitSync Sandbox: ${baseUrl}\nOrganizer access key (keep private): ${organizerToken}\nPayPal credentials: ${paypal.configured?'configured':'missing — fill server/.env and restart'}\nUse this server, not the old Python :8080 server, for payments.`);
 });

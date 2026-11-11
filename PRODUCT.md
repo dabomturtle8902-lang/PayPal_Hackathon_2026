@@ -12,7 +12,7 @@ Household organizers and roommates splitting shared move-in or home purchases (d
 
 ## Product Purpose
 
-SplitSync AI guides a household organizer from scanning a merchant purchase QR through AI-assisted or manual bill allocation, voice readback, private payment-link sharing, and verified PayPal Sandbox settlement tracking without exposing organizer credentials or other participants' payment links.
+PayPal Hackathon guides a household organizer from scanning a merchant purchase QR through AI-assisted or manual bill allocation, voice readback, private payment-link sharing, and verified PayPal Sandbox settlement tracking without exposing organizer credentials or other participants' payment links.
 
 ## Positioning
 
@@ -32,8 +32,8 @@ Connected purchase-splitting workflow backed by a single-process Node Sandbox le
 
 ## Brand Commitments
 
-- Name: **SplitSync AI** (`Shared purchases, settled.`)
-- Visual system reference: translated from **Medfarm** (`#0F67FE` Electric Blue, `#242E49` Deep Navy, `#48B3A9` Teal, `#FA4D5E` Coral accent, `#F2F5F9` / `#EDF5FF` cool slate surfaces, `Plus Jakarta Sans` typography, bordered square back button, `4px` focus-halo inputs, step-progress header) while retaining SplitSync AI's own identity and content.
+- Name: **PayPal Hackathon** (`Shared purchases, settled.`)
+- Visual system reference: translated from **Medfarm** (`#0F67FE` Electric Blue, `#242E49` Deep Navy, `#48B3A9` Teal, `#FA4D5E` Coral accent, `#F2F5F9` / `#EDF5FF` cool slate surfaces, `Plus Jakarta Sans` typography, bordered square back button, `4px` focus-halo inputs, step-progress header) while retaining PayPal Hackathon's own identity and content.
 
 ## Evidence on Hand
 

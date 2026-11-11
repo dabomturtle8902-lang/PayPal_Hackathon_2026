@@ -1,9 +1,26 @@
-// SplitSync AI Web App — Payment-first hub, multi-turn voice assistant, FX & self-settling demo engine
+// PayPal Hackathon Web App — Payment-first hub, multi-turn voice assistant, FX & self-settling demo engine
 
 const CURR_SYM = { USD: '$', GBP: '£', CAD: 'CA$', EUR: '€', JPY: '¥', INR: '₹' };
-const FX_RATES = { USD: 1, GBP: 0.79, CAD: 1.39, EUR: 0.92, JPY: 153.5, INR: 84.4 };
+let FX_RATES = { USD: 1, GBP: 0.74501, CAD: 1.4136, EUR: 0.89174, JPY: 158.18, INR: 93.93 };
+let fxRateDate = '2026-11-10';
 const CURRENCIES = ['USD', 'GBP', 'CAD', 'EUR', 'JPY', 'INR'];
 const names = ['Maya', 'Arun', 'Leah'];
+
+function applyFxRates(rates, date) {
+  if (typeof date !== 'string' || date < fxRateDate ||
+      !CURRENCIES.every(code => Number.isFinite(rates?.[code]) && rates[code] > 0)) return;
+  FX_RATES = rates;
+  fxRateDate = date;
+}
+
+function equalShare(total, count, currency) {
+  const unit = currency === 'JPY' ? 100 : 1;
+  return Math.floor(total / unit / count) * unit;
+}
+
+function totalInCurrency(rows, currency) {
+  return rows.reduce((sum, row) => sum + convertCents(row.amountCents, row.currency, currency), 0);
+}
 
 function normCurr(code, fallback = 'USD') {
   const c = String(code || '').trim().toUpperCase();
@@ -40,8 +57,8 @@ function fxQuote(amountCents, fromCurr = 'USD', toCurr = 'USD') {
     : Math.max(0, Math.round(Number(amountCents) || 0));
   const targetAmountCents = convertCents(sourceAmountCents, sourceCurrency, targetCurrency);
   const inrEquivalentCents = convertCents(sourceAmountCents, sourceCurrency, 'INR');
-  const rate = Number((FX_RATES[targetCurrency] / FX_RATES[sourceCurrency]).toFixed(targetCurrency === 'JPY' ? 2 : 4));
-  return { sourceAmountCents, sourceCurrency, targetAmountCents, targetCurrency, inrEquivalentCents, rate, demoQuote: true };
+  const rate = FX_RATES[targetCurrency] / FX_RATES[sourceCurrency];
+  return { sourceAmountCents, sourceCurrency, targetAmountCents, targetCurrency, inrEquivalentCents, rate, rateDate: fxRateDate };
 }
 
 function defaultContacts() {
@@ -56,11 +73,11 @@ function defaultContacts() {
 }
 
 const storeCatalog = [
-  { id: 'kit-essentials', name: 'Kitchen essentials bundle', priceCents: 12000, seller: 'Demo Merchant', category: 'Kitchen', demoLinked: true, art: 'bag', desc: 'Cookware, storage containers, and cleaning basics. Pairs with Desk lamp for the $150 Demo Merchant Sandbox flow.' },
-  { id: 'desk-lamp', name: 'Matte task desk lamp', priceCents: 3000, seller: 'Demo Merchant', category: 'Lighting', demoLinked: true, art: 'lamp', desc: 'Warm LED desk lamp with weighted base for shared study spaces. Pairs with Kitchen essentials for SS-001.' },
+  { id: 'kit-essentials', name: 'Kitchen essentials bundle', priceCents: 12000, seller: 'Sandbox Merchant', category: 'Kitchen', demoLinked: true, art: 'bag', desc: 'Cookware, storage containers, and cleaning basics. Pairs with Desk lamp for the $150 Sandbox Merchant Sandbox flow.' },
+  { id: 'desk-lamp', name: 'Matte task desk lamp', priceCents: 3000, seller: 'Sandbox Merchant', category: 'Lighting', demoLinked: true, art: 'lamp', desc: 'Warm LED desk lamp with weighted base for shared study spaces. Pairs with Kitchen essentials for SS-001.' },
   { id: 'bamboo-tray', name: 'Modular bamboo organizer', priceCents: 2800, seller: 'Studio Living Demo', category: 'Kitchen', demoLinked: false, art: 'grid', desc: 'Expandable drawer divider set for shared kitchen flatware and utensils.' },
   { id: 'hepa-purifier', name: 'Compact HEPA air purifier', priceCents: 8400, seller: 'PureHome Demo', category: 'Furniture', demoLinked: false, art: 'wind', desc: 'Whisper-quiet bedroom and living-room air cleaner with washable pre-filter.' },
-  { id: 'microfiber-kit', name: 'Move-in cleaning kit', priceCents: 2400, seller: 'Demo Merchant', category: 'Cleaning', demoLinked: false, art: 'sparkles', desc: 'Plant-safe surface spray, scrub sponges, and 8 microfiber cloths.' },
+  { id: 'microfiber-kit', name: 'Move-in cleaning kit', priceCents: 2400, seller: 'Sandbox Merchant', category: 'Cleaning', demoLinked: false, art: 'sparkles', desc: 'Plant-safe surface spray, scrub sponges, and 8 microfiber cloths.' },
   { id: 'pantry-bins', name: 'Stackable pantry bins (6 pack)', priceCents: 3600, seller: 'TidyNest Demo', category: 'Kitchen', demoLinked: false, art: 'box', desc: 'Clear BPA-free fridge and dry-pantry bins with grip handles.' },
 ];
 
@@ -113,6 +130,7 @@ let activityQuery = '';
 let scannerState = 'ready';
 let scannerMessage = '';
 let activeStream = null;
+let scanEpoch = 0;
 
 // Send / Request forms (clean/empty initial values)
 let contactSearch = '';
@@ -121,7 +139,7 @@ let activeTxReceiptId = '';
 let manualReqForm = { multi: false, contactId: '', contactIds: [], amountStr: '', currency: 'USD', note: '', channel: 'demo', busy: false, error: '', clientRequestId: '' };
 
 // Rent screen (clean empty default unless explicitly saved by user)
-let rentForm = { creating: false, contactIds: [], amountStr: '', currency: 'USD', dueDate: '2026-12-01', mode: 'equal', customAmounts: {}, saveRule: false, busy: false, error: '' };
+let rentForm = { creating: false, contactIds: [], amountStr: '', currency: 'USD', dueDate: '', mode: 'equal', customAmounts: {}, saveRule: false, busy: false, error: '' };
 
 // Scan Bill standalone flow (starts blank; opens camera on entry)
 let billStream = null;
@@ -136,8 +154,9 @@ let billExtractError = '';
 let billDraft = null;
 let billRecipientIds = [];
 
-// Ask SplitSync Multi-turn Conversation State (clean empty thread)
+// Ask AI Multi-turn Conversation State (clean empty thread)
 let chatHistory = [];
+let groupPaymentReceipt = [];
 let chatDraft = null; // { intent, recipients, needsClarification, clarificationPrompt, modelUsed }
 let chatAttachedBill = null;
 let chatAttachedImg = '';
@@ -149,7 +168,7 @@ let chatExtractState = 'idle';
 let chatExtractError = '';
 let askComposerText = '';
 let askVoiceOn = localStorage.getItem('splitsync-voice-on') !== 'false';
-let askAutoSendMic = true;
+let askAutoSendMic = false;
 let askBusy = false;
 let askConfirmSheetOpen = false;
 let askConfirmChannel = 'demo';
@@ -297,6 +316,7 @@ async function api(path, body, timeoutMs = 28000, signal = undefined) {
 
 // ---------- Workspace Sync & Settlement Ticker ----------
 function stopStreams() {
+  scanEpoch++;
   if (activeStream) { activeStream.getTracks().forEach(t => t.stop()); activeStream = null; }
   if (billStream) { billStream.getTracks().forEach(t => t.stop()); billStream = null; }
 }
@@ -397,6 +417,7 @@ async function detectBackend() {
 async function loadWorkspaceState() {
   const prevReimbs = JSON.parse(JSON.stringify(reimbursementsList));
   const data = await api('/api/organizer/state');
+  applyFxRates(data.fxRates, data.fxRateDate);
   ledger = data.purchase;
   if (Array.isArray(data.contacts)) contactsList = data.contacts;
   if (Array.isArray(data.reimbursements)) reimbursementsList = data.reimbursements;
@@ -418,23 +439,23 @@ function authView() {
     <section class="auth-hero">
       <div>
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
-          <span class="brand-mark sm" aria-hidden="true">${svg('arrow-right')}</span>
-          <b style="font-size:17px">SplitSync AI</b>
+          <span class="brand-mark sm" aria-hidden="true"><img src="assets/paypal.png" alt=""></span>
+          <b style="font-size:17px">PayPal Hackathon</b>
         </div>
-        ${badge(backendMode ? 'Demo mode · Sandbox ready' : 'Demo preview', 'navy')}
+        ${badge(backendMode ? 'Practice mode · Sandbox ready' : 'Practice preview', 'navy')}
         <h1 style="margin-top:14px">Pay, request, and split by voice or camera.</h1>
-        <p style="margin-top:8px">Send across borders with instant quotes, talk or photograph bills in Ask SplitSync, and settle shared purchases cleanly.</p>
+        <p style="margin-top:8px">Send across borders with instant quotes, talk or photograph bills in Ask AI, and settle shared purchases cleanly.</p>
       </div>
       <div>
-        <div class="auth-feature">${svg('qr')}<div><b>Scan &amp; pay + International sends</b><small>Pay supported Sandbox merchant links or send demo transfers to international contacts.</small></div></div>
-        <div class="auth-feature">${svg('mic')}<div><b>Conversational Ask SplitSync</b><small>Speak, type, or attach a receipt and hear Chatterbox confirm validated details.</small></div></div>
+        <div class="auth-feature">${svg('qr')}<div><b>Scan &amp; pay + International sends</b><small>Pay supported Sandbox merchant links or send practice transfers to international contacts.</small></div></div>
+        <div class="auth-feature">${svg('mic')}<div><b>Conversational Ask AI</b><small>Speak, type, or attach a receipt and hear Chatterbox confirm validated details.</small></div></div>
         <div class="auth-feature">${svg('bag')}<div><b>splitStore shared shopping</b><small>Browse sample household items, build a shared cart, and split when ready.</small></div></div>
       </div>
     </section>
 
     <section class="card">
       <h2>Connect workspace</h2>
-      <p style="margin-top:6px">Enter the SplitSync organizer key from your Node terminal to unlock server AI, Chatterbox speech, and Sandbox persistence.</p>
+      <p style="margin-top:6px">Enter the organizer key from your Node terminal to unlock server AI, Chatterbox speech, and Sandbox persistence.</p>
       ${authErrorMessage ? `<div class="callout error" role="alert">${svg('alert')}<div><b>${authErrorKind === 'invalid' ? 'Invalid organizer key' : 'Backend unavailable'}</b><br>${escapeHtml(authErrorMessage)}</div></div>` : ''}
       <form onsubmit="event.preventDefault(); signInOrganizer()">
         <div class="field-group">
@@ -449,7 +470,7 @@ function authView() {
         </div>
       </form>
       <div class="rule"></div>
-      <button type="button" class="link-coral" onclick="enterStaticPreview()">Continue in Demo preview (offline)</button>
+      <button type="button" class="link-coral" onclick="enterStaticPreview()">Continue in Practice preview (offline)</button>
     </section>
   </div>`;
 }
@@ -482,7 +503,16 @@ async function signInOrganizer() {
 
 async function signOutOrganizer() {
   if (backendMode) { try { await api('/api/organizer/logout', {}); } catch {} }
-  ledger = null; staticPreviewMode = false; go('welcome'); await render();
+  ledger = null;
+  staticPreviewMode = true;
+  contactsList = loadContactsFromStorage();
+  reimbursementsList = JSON.parse(localStorage.getItem('splitsync-reimbursements') || '[]');
+  demoTransactions = JSON.parse(localStorage.getItem('splitsync-demo-tx') || '[]');
+  savedRentRule = JSON.parse(localStorage.getItem('splitsync-rent-rule') || 'null');
+  ss001Active = localStorage.getItem('splitsync-ss001-active') === 'true';
+  published = localStorage.getItem('splitsync-published') === 'true';
+  lamp = localStorage.getItem('splitsync-lamp') || 'Maya';
+  go('profile'); await render();
 }
 
 function enterStaticPreview() {
@@ -495,14 +525,16 @@ async function resetDemoSession() {
   justSettledIds.clear();
   cancelAskSpeech();
   if (backendMode && ledger) {
-    try { await api('/api/organizer/reset-demo', {}); await loadWorkspaceState(); } catch (e) { toast(e.message); }
+    try { await api('/api/organizer/reset-demo', {}); await loadWorkspaceState(); } catch (e) { toast(e.message); go('profile'); return; }
   }
   demoTransactions = [];
-  reimbursementsList = [];
+  if (!ledger) {
+    reimbursementsList = [];
+    ss001Active = false;
+    published = false;
+    lamp = 'Maya';
+  }
   savedRentRule = null;
-  ss001Active = false;
-  published = false;
-  lamp = 'Maya';
   localStorage.removeItem('splitsync-reimbursements');
   localStorage.removeItem('splitsync-demo-tx');
   localStorage.removeItem('splitsync-rent-rule');
@@ -514,9 +546,9 @@ async function resetDemoSession() {
   billRawImage = ''; billCroppedImage = ''; billDraft = null; billRecipientIds = [];
   transferForm = { contactId: '', amountStr: '', sourceCurrency: 'USD', targetCurrency: 'GBP', note: '', clientTxId: '', busy: false, error: '', showInrQuote: true };
   manualReqForm = { multi: false, contactId: '', contactIds: [], amountStr: '', currency: 'USD', note: '', channel: 'demo', busy: false, error: '', clientRequestId: '' };
-  rentForm = { creating: false, contactIds: [], amountStr: '', currency: 'USD', dueDate: '2026-12-01', mode: 'equal', customAmounts: {}, saveRule: false, busy: false, error: '' };
+  rentForm = { creating: false, contactIds: [], amountStr: '', currency: 'USD', dueDate: '', mode: 'equal', customAmounts: {}, saveRule: false, busy: false, error: '' };
   scannerState = 'ready'; scannerMessage = ''; pastedLinkDraft = '';
-  toast('Clean demo session ready.');
+  toast('Clean practice session ready.');
   go('home');
   render();
 }
@@ -540,11 +572,11 @@ function buildUnifiedActivity() {
       kind: 'transfer',
       counterparty: `${tx.flag || ''} ${tx.recipientName}`.trim(),
       title: `Sent to ${tx.recipientName}`,
-      subtitle: tx.note || 'Demo transfer',
+      subtitle: tx.note || 'Practice transfer',
       date: (tx.createdAt || '').slice(0, 10) || 'Today',
       primaryAmount: cents(tx.sourceAmountCents, tx.sourceCurrency, true),
       secondaryAmount: tx.sourceCurrency !== tx.targetCurrency ? `→ ${cents(tx.targetAmountCents, tx.targetCurrency, true)}` : '',
-      status: 'Demo transfer',
+      status: 'Practice transfer',
       filterBucket: 'Transfers',
       route: `tx/${tx.id}`,
       sortTs: Date.parse(tx.createdAt || '') || 0,
@@ -554,8 +586,8 @@ function buildUnifiedActivity() {
     const recs = req.recipients || [];
     const paidCount = recs.filter(r => r.status === 'Paid').length;
     const waitCount = recs.filter(r => r.status === 'Waiting for payment').length;
-    const totalReq = recs.reduce((s, r) => s + r.amountCents, 0);
-    const owed = recs.filter(r => r.status !== 'Paid').reduce((s, r) => s + r.amountCents, 0);
+    const totalReq = totalInCurrency(recs, req.currency || 'USD');
+    const owed = totalInCurrency(recs.filter(r => r.status !== 'Paid'), req.currency || 'USD');
     let aggStatus = 'Created';
     if (recs.length && paidCount === recs.length) aggStatus = recs.some(r => r.demoSettled) ? 'Payment received' : 'Paid';
     else if (waitCount > 0) aggStatus = 'Waiting for payment';
@@ -587,7 +619,7 @@ function buildUnifiedActivity() {
     rows.push({
       id: 'SS-001',
       kind: 'sandbox',
-      counterparty: 'Demo Merchant · SS-001',
+      counterparty: 'Sandbox Merchant · SS-001',
       title: 'Move-in essentials (SS-001)',
       subtitle: `PayPal Sandbox · ${paidC}/3 paid`,
       date: 'Sandbox',
@@ -609,17 +641,18 @@ function homeScreen() {
 
   return `<div class="hub-top">
     <div>
-      <h1>Hello, Leah</h1>
-      <p class="screen-sub">${badge(backendMode ? 'Demo mode · Sandbox connected' : 'Demo mode', 'preview')}</p>
+      <div class="app-identity"><img src="assets/paypal.png" alt=""><div><span class="sub">PayPal Hackathon</span><h1>Hello, Leah</h1></div></div>
+      <p class="screen-sub">${badge(backendMode ? 'Practice mode · Sandbox connected' : 'Practice mode', 'preview')}</p>
     </div>
     <button type="button" class="btn-ghost-sm" onclick="go('profile')" aria-label="Profile settings">${svg('key')}<span>Profile</span></button>
   </div>
 
-  <section class="hub-card" aria-label="Everyday payment actions">
+  <section class="hub-card home-actions" aria-label="Everyday payment actions">
     <div class="hub-actions-grid">
-      <button type="button" class="hub-tile" onclick="openScanPay()">
+      <button type="button" class="hub-tile scan-action" onclick="openScanPay()">
         <span class="hub-tile-icon">${svg('qr')}</span>
-        <b>Scan &amp; pay</b>
+        <span><b>Scan &amp; pay</b><small>Scan a payment QR code</small></span>
+        ${svg('arrow-right')}
       </button>
       <button type="button" class="hub-tile" onclick="openManualRequest()">
         <span class="hub-tile-icon teal">${svg('send-req')}</span>
@@ -634,28 +667,20 @@ function homeScreen() {
       <span style="display:flex;align-items:center;gap:10px">
         <span class="hub-tile-icon" style="width:36px;height:36px;border-radius:10px">${svg('mic')}</span>
         <span>
-          <b style="display:block;font-size:14px">Ask SplitSync</b>
-          <small style="color:#DCE1E8;font-size:12px">Voice assistant, quick send, or snap a receipt</small>
+          <b class="ask-action-title">Ask AI</b>
+          <small class="sub">Draft a payment in your own words</small>
         </span>
       </span>
       ${svg('arrow-right')}
     </button>
   </section>
 
-  <div class="contact-strip" aria-label="Quick international contacts">
-    ${quickContacts.map(c => `<button type="button" class="contact-pill" onclick="openSendMoney('${escapeHtml(c.id)}')">
-      <span>${escapeHtml(c.flag || '')}</span>
-      <span>${escapeHtml(c.name)}</span>
-      <small class="sub">${escapeHtml(c.currency)}</small>
-    </button>`).join('')}
-  </div>
-
   <section class="card" style="margin-bottom:16px">
     <div class="section-title">
       <h2>Latest activity</h2>
       <a class="section-link" href="#activity">See all ${svg('arrow-right')}</a>
     </div>
-    ${items.length === 0 ? `<p class="sub">No activity yet. Scan &amp; pay a merchant QR, send to an international contact, or request money.</p>` : items.slice(0, 4).map(it => `
+    ${items.length === 0 ? `<p class="sub">No activity yet.</p>` : items.slice(0, 4).map(it => `
       <div class="row ${it.flash ? 'settled-flash' : ''}" style="cursor:pointer" onclick="go('${escapeHtml(it.route)}')">
         <span class="icon-box">${svg(it.kind === 'sandbox' ? 'store' : it.kind === 'transfer' ? 'arrow-right' : 'receipt')}</span>
         <div class="grow">
@@ -669,6 +694,14 @@ function homeScreen() {
         </div>
       </div>`).join('')}
   </section>
+
+  <div class="contact-strip" aria-label="Quick international contacts">
+    ${quickContacts.map(c => `<button type="button" class="contact-pill" onclick="openSendMoney('${escapeHtml(c.id)}')">
+      <span>${escapeHtml(c.flag || '')}</span>
+      <span>${escapeHtml(c.name)}</span>
+      <small class="sub">${escapeHtml(c.currency)}</small>
+    </button>`).join('')}
+  </div>
 
   <div class="section-title" style="margin-bottom:10px">
     <h2 style="font-size:16px">Household actions</h2>
@@ -690,7 +723,7 @@ function homeScreen() {
 
   <section class="card" style="margin-top:16px">
     <div class="section-title">
-      <div><h2>splitStore ${badge('Sample · Demo mode', 'preview')}</h2></div>
+      <div><h2>splitStore ${badge('Sample · Practice mode', 'preview')}</h2></div>
       <a class="section-link" href="#store">Browse Store ${svg('arrow-right')}</a>
     </div>
     <div class="split-grid" style="gap:12px">
@@ -736,19 +769,19 @@ function sendMoneyScreen() {
   const srcMajor = Number(transferForm.amountStr) || 0;
   const quote = fxQuote(Math.round(srcMajor * 100), transferForm.sourceCurrency, transferForm.targetCurrency);
 
-  return screenHeader('Send money', 'International demo transfers with instant FX quote', 'home', badge('Demo mode', 'preview'))
+  return screenHeader('Send money', 'International practice transfers with instant FX quote', 'home', badge('Practice mode', 'preview'))
     + `<div class="narrow card">
       <div class="field-group" style="margin-top:0">
         <label for="send-contact-search">Choose contact</label>
         <input id="send-contact-search" type="search" value="${escapeHtml(contactSearch)}" oninput="contactSearch = this.value; render()" placeholder="Search Allen (UK), Maya (US), Arun (CA), Sofia (DE), Yuki (JP)…">
       </div>
-      <div class="chip-row" style="margin-bottom:14px">
-        ${filtered.map(c => `<button type="button" class="chip ${transferForm.contactId === c.id ? 'selected' : ''}" onclick="selectSendContact('${escapeHtml(c.id)}')">${escapeHtml(c.flag || '')} ${escapeHtml(c.name)} · ${escapeHtml(c.country || '')} (${escapeHtml(c.currency || 'USD')})</button>`).join('')}
+      <div class="contact-cards" style="margin:12px 0 16px">
+        ${filtered.map(c => `<button type="button" class="contact-card" aria-pressed="${transferForm.contactId === c.id}" onclick="selectSendContact('${escapeHtml(c.id)}')"><span aria-hidden="true">${escapeHtml(c.flag || '')}</span><span><b>${escapeHtml(c.name)}</b><small>${escapeHtml(c.currency || 'USD')}</small></span></button>`).join('')}
       </div>
       ${selected ? `<div class="split-grid" style="gap:12px">
         <div class="field-group" style="margin-top:0">
           <label for="send-amount">You send (${escapeHtml(transferForm.sourceCurrency)})</label>
-          <input id="send-amount" type="number" step="0.01" value="${escapeHtml(transferForm.amountStr)}" oninput="transferForm.amountStr = this.value; render()" placeholder="0.00">
+          <input id="send-amount" type="number" step="${transferForm.sourceCurrency === 'JPY' ? '1' : '0.01'}" value="${escapeHtml(transferForm.amountStr)}" oninput="transferForm.amountStr = this.value; render()" placeholder="0.00">
         </div>
         <div class="field-group" style="margin-top:0">
           <label for="send-currency">Send currency</label>
@@ -770,8 +803,8 @@ function sendMoneyScreen() {
       ${srcMajor > 0 ? `<div class="fx-box">
         <div class="row" style="padding:4px 0"><span>You send</span><b class="money">${cents(quote.sourceAmountCents, quote.sourceCurrency, true)}</b></div>
         <div class="row" style="padding:4px 0"><span>${escapeHtml(selected.name)} receives</span><b class="money" style="color:var(--primary-ink)">${cents(quote.targetAmountCents, quote.targetCurrency, true)}</b></div>
-        <div class="row" style="padding:4px 0"><span>Demo FX quote</span><small class="sub">1 ${quote.sourceCurrency} = ${quote.rate} ${quote.targetCurrency} · Demo fixture rate</small></div>
-        ${quote.sourceCurrency !== 'INR' ? `<div class="row" style="padding:4px 0"><span>INR sender quote (India context)</span><small class="sub money">${cents(quote.inrEquivalentCents, 'INR', true)} (demo quote)</small></div>` : ''}
+        <div class="row" style="padding:4px 0"><span>ECB reference rate</span><small class="sub">1 ${quote.sourceCurrency} ≈ ${quote.rate.toPrecision(6)} ${quote.targetCurrency} · ${fxRateDate}</small></div>
+        ${quote.sourceCurrency !== 'INR' ? `<div class="row" style="padding:4px 0"><span>INR sender quote (India context)</span><small class="sub money">${cents(quote.inrEquivalentCents, 'INR', true)} (reference estimate)</small></div>` : ''}
       </div>` : ''}
       ${transferForm.error ? `<div class="callout error" role="alert">${svg('alert')}<span>${escapeHtml(transferForm.error)}</span></div>` : ''}
       <div class="actions">
@@ -783,7 +816,7 @@ function sendMoneyScreen() {
 function proceedToReviewTransfer() {
   if (!transferForm.contactId) { transferForm.error = 'Choose a contact first.'; render(); return; }
   const amt = Number(transferForm.amountStr);
-  if (!Number.isFinite(amt) || amt <= 0) { transferForm.error = 'Enter an amount greater than 0.'; render(); return; }
+  if (!Number.isFinite(amt) || amt <= 0 || (transferForm.sourceCurrency === 'JPY' && !Number.isInteger(amt))) { transferForm.error = 'Enter an amount greater than 0.'; render(); return; }
   transferForm.error = '';
   transferForm.clientTxId ||= `tx-${Date.now().toString(36)}`;
   go('review-transfer');
@@ -795,9 +828,9 @@ function reviewTransferScreen() {
   const srcCents = Math.max(0, Math.round((Number(transferForm.amountStr) || 0) * 100));
   const quote = fxQuote(srcCents, transferForm.sourceCurrency, transferForm.targetCurrency);
 
-  return screenHeader('Review payment', 'Verify the recipient and amount before you pay.', 'ask', badge('Demo mode', 'preview'))
+  return screenHeader('Review payment', 'Verify the recipient and amount before you pay.', 'ask', badge('Practice mode', 'preview'))
     + `<div class="narrow card">
-      <div class="callout">${svg('alert')}<div><b>Verify the recipient and amount before you pay</b><br>This transfers in Demo mode using saved fixture FX rates. PayPal merchant checkout applies separately to Demo Merchant links.</div></div>
+      <div class="callout">${svg('alert')}<div><b>Verify the recipient and amount before you pay</b><br>Payments here use the dated reference rate and are simulated.</div></div>
       <div class="row" style="margin-top:12px">
         <span class="person">${escapeHtml(c.flag || c.name[0])}</span>
         <div class="grow"><b>${escapeHtml(c.name)}</b><br><small class="sub">${escapeHtml(c.country || '')} · ${escapeHtml(c.handle || c.note || '')}</small></div>
@@ -822,13 +855,13 @@ function reviewTransferScreen() {
       <div class="fx-box">
         <div class="row" style="padding:4px 0"><span>You send</span><b class="money">${cents(quote.sourceAmountCents, quote.sourceCurrency, true)}</b></div>
         <div class="row" style="padding:4px 0"><span>${escapeHtml(c.name)} receives</span><b class="money" style="color:var(--primary-ink);font-size:18px">${cents(quote.targetAmountCents, quote.targetCurrency, true)}</b></div>
-        <div class="row" style="padding:4px 0"><span>Demo quote</span><small class="sub">1 ${quote.sourceCurrency} = ${quote.rate} ${quote.targetCurrency} · INR ${cents(quote.inrEquivalentCents, 'INR')}</small></div>
+        <div class="row" style="padding:4px 0"><span>ECB reference rate</span><small class="sub">1 ${quote.sourceCurrency} ≈ ${quote.rate.toPrecision(6)} ${quote.targetCurrency} · ${fxRateDate} · INR ${cents(quote.inrEquivalentCents, 'INR')}</small></div>
       </div>
       ${transferForm.error ? `<div class="callout error" role="alert">${svg('alert')}<span>${escapeHtml(transferForm.error)}</span></div>` : ''}
       <div class="actions">
         <button type="button" class="btn btn-secondary" onclick="go('send')" ${transferForm.busy ? 'disabled' : ''}>Edit details</button>
         <button type="button" class="btn btn-primary" id="demo-pay-btn" onclick="executeDemoPay()" ${transferForm.busy ? 'disabled' : ''}>
-          ${transferForm.busy ? '<span>Processing demo payment…</span>' : `<span>Pay ${escapeHtml(cents(quote.sourceAmountCents, quote.sourceCurrency, true))}</span>${svg('arrow-right')}`}
+          ${transferForm.busy ? '<span>Processing practice payment…</span>' : `<span>Pay ${escapeHtml(cents(quote.sourceAmountCents, quote.sourceCurrency, true))}</span>${svg('arrow-right')}`}
         </button>
       </div>
     </div>`;
@@ -838,7 +871,7 @@ async function executeDemoPay() {
   if (transferForm.busy) return;
   const c = contactsList.find(x => x.id === transferForm.contactId);
   const srcCents = Math.round((Number(transferForm.amountStr) || 0) * 100);
-  if (!c || srcCents <= 0) { transferForm.error = 'Enter a positive amount first.'; render(); return; }
+  if (!c || srcCents <= 0 || (transferForm.sourceCurrency === 'JPY' && srcCents % 100)) { transferForm.error = 'Enter a positive amount first.'; render(); return; }
   transferForm.busy = true; transferForm.error = ''; render();
   const reducedMotion = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   if (!reducedMotion) await new Promise(r => setTimeout(r, 550));
@@ -885,6 +918,8 @@ async function executeDemoPay() {
       }
     }
     transferForm.busy = false;
+    if (chatDraft?.intent === 'send' && chatDraft.recipients.length === 1 &&
+        chatDraft.recipients[0].contactId === c.id) chatDraft = null;
     activeTxReceiptId = tx.id;
     go(`tx/${tx.id}`);
   } catch (e) {
@@ -897,7 +932,7 @@ async function executeDemoPay() {
 function txReceiptScreen(txId) {
   const tx = demoTransactions.find(x => x.id === txId);
   if (!tx) return screenHeader('Receipt not found', '', 'activity') + `<div class="narrow card"><p>Transaction not found.</p></div>`;
-  return screenHeader('Demo receipt', 'Demo transfer · Simulated fixture quote', 'activity', badge('Demo mode', 'preview'))
+  return screenHeader('Payment receipt', 'Practice transfer · Reference rate estimate', 'activity', badge('Practice mode', 'preview'))
     + `<div class="narrow card center">
       <div class="result-icon">${svg('check')}</div>
       <h1>Sent ${escapeHtml(cents(tx.sourceAmountCents, tx.sourceCurrency, true))}</h1>
@@ -905,9 +940,9 @@ function txReceiptScreen(txId) {
       <div class="rule"></div>
       <div class="row"><span>Receipt ID</span><code>${escapeHtml(tx.id)}</code></div>
       <div class="row"><span>You sent</span><b class="money">${escapeHtml(cents(tx.sourceAmountCents, tx.sourceCurrency, true))}</b></div>
-      ${tx.sourceCurrency !== tx.targetCurrency ? `<div class="row"><span>${escapeHtml(tx.recipientName)} received (demo quote)</span><b class="money">${escapeHtml(cents(tx.targetAmountCents, tx.targetCurrency, true))}</b></div>` : ''}
+      ${tx.sourceCurrency !== tx.targetCurrency ? `<div class="row"><span>${escapeHtml(tx.recipientName)} received (reference estimate)</span><b class="money">${escapeHtml(cents(tx.targetAmountCents, tx.targetCurrency, true))}</b></div>` : ''}
       <div class="row"><span>Note</span><b>${escapeHtml(tx.note || 'Payment')}</b></div>
-      <div class="row"><span>Settlement ledger</span>${pill('Demo transfer')}</div>
+      <div class="row"><span>Settlement ledger</span>${pill('Practice transfer')}</div>
       <div class="actions">
         <button type="button" class="btn btn-secondary" onclick="go('activity')">View in Activity</button>
         <button type="button" class="btn btn-primary" onclick="go('home')">Done</button>
@@ -935,6 +970,7 @@ function openManualRequest(contactId = '') {
 }
 
 function toggleReqContact(id) {
+  manualReqForm.review = null;
   if (!manualReqForm.multi) {
     manualReqForm.contactId = id;
     const c = contactsList.find(x => x.id === id);
@@ -955,29 +991,29 @@ function manualRequestScreen() {
   const amt = Number(manualReqForm.amountStr) || 0;
   const totalCents = Math.round(amt * 100);
 
-  return screenHeader('Request money', 'Choose a contact, enter amount, and track settlement automatically', 'home', badge('Demo mode', 'preview'))
+  return screenHeader('Request money', 'Choose a contact, enter amount, and track settlement automatically', 'home', badge('Practice mode', 'preview'))
     + `<div class="narrow card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px">
         <label for="req-contact-search" style="font-size:13px;font-weight:800">Select contact${manualReqForm.multi ? 's (group split)' : ''}</label>
-        <button type="button" class="btn-ghost-sm" onclick="manualReqForm.multi = !manualReqForm.multi; render()">${manualReqForm.multi ? 'Single person' : 'Split group'}</button>
+        <button type="button" class="btn-ghost-sm" onclick="manualReqForm.multi = !manualReqForm.multi; manualReqForm.review = null; render()">${manualReqForm.multi ? 'Single person' : 'Split group'}</button>
       </div>
       <div class="field-group" style="margin-top:0">
         <input id="req-contact-search" type="search" value="${escapeHtml(contactSearch)}" oninput="contactSearch = this.value; render()" placeholder="Search contacts…">
       </div>
-      <div class="chip-row" style="margin-bottom:14px">
+      <div class="contact-cards" style="margin:12px 0 16px">
         ${filtered.map(c => {
           const on = manualReqForm.multi ? manualReqForm.contactIds.includes(c.id) : manualReqForm.contactId === c.id;
-          return `<button type="button" class="chip ${on ? 'selected' : ''}" onclick="toggleReqContact('${escapeHtml(c.id)}')">${escapeHtml(c.flag || '')} ${escapeHtml(c.name)} (${escapeHtml(c.currency)})</button>`;
+          return `<button type="button" class="contact-card" aria-pressed="${on}" onclick="toggleReqContact('${escapeHtml(c.id)}')"><span aria-hidden="true">${escapeHtml(c.flag || '')}</span><span><b>${escapeHtml(c.name)}</b><small>${escapeHtml(c.currency || 'USD')}</small></span></button>`;
         }).join('')}
       </div>
       ${chosen.length ? `<div class="split-grid" style="gap:10px">
         <div class="field-group" style="margin-top:0">
           <label for="req-amt">${manualReqForm.multi ? 'Total amount to split' : 'Amount'}</label>
-          <input id="req-amt" type="number" step="0.01" value="${escapeHtml(manualReqForm.amountStr)}" oninput="manualReqForm.amountStr = this.value; render()" placeholder="0.00">
+          <input id="req-amt" type="number" step="0.01" value="${escapeHtml(manualReqForm.amountStr)}" oninput="manualReqForm.amountStr = this.value; manualReqForm.review = null; render()" placeholder="0.00">
         </div>
         <div class="field-group" style="margin-top:0">
           <label for="req-curr">Currency</label>
-          <select id="req-curr" onchange="manualReqForm.currency = this.value; render()">
+          <select id="req-curr" onchange="manualReqForm.currency = this.value; manualReqForm.review = null; render()">
             ${CURRENCIES.map(curr => `<option value="${curr}" ${manualReqForm.currency === curr ? 'selected' : ''}>${curr}</option>`).join('')}
           </select>
         </div>
@@ -987,32 +1023,48 @@ function manualRequestScreen() {
         <input id="req-note" value="${escapeHtml(manualReqForm.note)}" oninput="manualReqForm.note = this.value" placeholder="Dinner, cab, groceries…">
       </div>
       ${totalCents > 0 && chosen.length === 1 && chosen[0].currency !== manualReqForm.currency ? `<div class="fx-box">
-        <div class="row" style="padding:4px 0"><span>Demo FX display (${escapeHtml(chosen[0].name)})</span><b class="money">${cents(convertCents(totalCents, manualReqForm.currency, chosen[0].currency), chosen[0].currency, true)}</b></div>
+        <div class="row" style="padding:4px 0"><span>Equivalent amount (${escapeHtml(chosen[0].name)})</span><b class="money">${cents(convertCents(totalCents, manualReqForm.currency, chosen[0].currency), chosen[0].currency, true)}</b></div>
       </div>` : ''}
       ${manualReqForm.error ? `<div class="callout error" role="alert">${svg('alert')}<span>${escapeHtml(manualReqForm.error)}</span></div>` : ''}
       <div class="actions">
         <button type="button" class="btn btn-primary full" onclick="submitManualRequest()" ${manualReqForm.busy ? 'disabled' : ''}>
-          <span>${manualReqForm.busy ? 'Creating request…' : 'Create request'}</span>${svg('arrow-right')}
+          <span>Review request</span>${svg('arrow-right')}
         </button>
       </div>` : `<p class="sub">Pick a contact above to create a payment request.</p>`}
+      ${manualReqForm.review ? `<section class="card card-tint" aria-label="Review request">
+        <div class="section-title"><h2>Review request</h2><button type="button" class="btn-ghost-sm" onclick="manualReqForm.review = null; render()">Edit</button></div>
+        ${manualReqForm.review.map(r => `<div class="row"><span>${escapeHtml(r.name)} owes</span><b>${cents(r.amountCents, r.currency, true)}</b></div>`).join('')}
+        ${totalCents > totalInCurrency(manualReqForm.review, manualReqForm.currency) ? `<div class="row"><span>Your share</span><b>${cents(totalCents - totalInCurrency(manualReqForm.review, manualReqForm.currency), manualReqForm.currency, true)}</b></div>` : ''}
+        <p class="sub">Practice requests advance automatically with simulated payment receipts.</p>
+        <button type="button" id="manual-confirm" class="btn btn-primary full" onclick="submitManualRequest(true)" ${manualReqForm.busy ? 'disabled' : ''}>${manualReqForm.busy ? 'Creating request…' : 'Create request'}</button>
+      </section>` : ''}
     </div>`;
 }
 
-async function submitManualRequest() {
+async function submitManualRequest(confirmed = false) {
+  if (manualReqForm.busy) return;
   const chosen = manualReqForm.multi
     ? contactsList.filter(c => manualReqForm.contactIds.includes(c.id))
     : contactsList.filter(c => c.id === manualReqForm.contactId);
   const totalCents = Math.round((Number(manualReqForm.amountStr) || 0) * 100);
-  if (!chosen.length || totalCents <= 0) { manualReqForm.error = 'Select contact(s) and enter a positive amount.'; render(); return; }
-  const baseShare = Math.floor(totalCents / chosen.length);
-  const recipients = chosen.map((c, idx) => ({
+  if (!chosen.length || totalCents <= 0 || (manualReqForm.currency === 'JPY' && totalCents % 100)) { manualReqForm.error = 'Select contact(s) and enter a positive amount.'; render(); return; }
+  const baseShare = equalShare(totalCents, chosen.length, manualReqForm.currency);
+  const recipients = chosen.filter(c => c.id !== 'leah').map(c => ({
     name: c.name,
     contactId: c.id,
-    amountCents: idx === 0 ? totalCents - baseShare * (chosen.length - 1) : baseShare,
+    amountCents: baseShare,
     currency: manualReqForm.currency,
     targetCurrency: c.currency || manualReqForm.currency,
     reason: manualReqForm.note.trim() || 'Shared request',
   }));
+  if (!recipients.length || recipients.some(r => r.amountCents <= 0)) { manualReqForm.error = 'Enter an amount that gives each contact a positive share.'; render(); return; }
+  if (!confirmed) {
+    manualReqForm.review = recipients;
+    manualReqForm.error = '';
+    render();
+    document.querySelector('#manual-confirm')?.focus();
+    return;
+  }
   manualReqForm.busy = true; manualReqForm.error = ''; render();
   const created = await persistRequestRecord({
     title: chosen.length === 1 ? `Request from ${chosen[0].name}` : `${chosen.map(c => c.name).join(', ')}`,
@@ -1031,6 +1083,8 @@ async function submitManualRequest() {
 
 // ---------- Shared Request Persistence + Detail Screen ----------
 async function persistRequestRecord(payload) {
+  payload = {...payload, recipients: payload.recipients.filter(r => r.contactId !== 'leah')};
+  if (!payload.recipients.length) { toast('Choose someone to request money from.'); return null; }
   const channel = payload.channel || 'demo';
   const demoAutoSettle = Boolean(payload.demoAutoSettle || channel === 'demo');
   if (backendMode && ledger) {
@@ -1066,7 +1120,7 @@ async function persistRequestRecord(payload) {
       deliveryStatus: channel === 'email' || channel === 'sms' ? 'Failed' : (demoAutoSettle ? 'Sent' : 'Created'),
       deliveryMessage: channel === 'email' || channel === 'sms'
         ? `${channel.toUpperCase()} gateway not configured. Copy link or Show QR instead.`
-        : (demoAutoSettle ? 'Demo request active — awaiting simulated payer confirmation.' : 'Share via Copy link or QR.'),
+        : (demoAutoSettle ? 'Practice request active — awaiting simulated payer confirmation.' : 'Share via Copy link or QR.'),
       settleAt: demoAutoSettle ? now + 2400 + (i * 2500) : null,
       demoSettled: false,
       receiptRef: null,
@@ -1087,7 +1141,8 @@ async function persistRequestRecord(payload) {
     items: payload.items || [],
     taxCents: payload.taxCents || 0,
     tipCents: payload.tipCents || 0,
-    totalCents: payload.totalCents || recs.reduce((s, x) => s + x.amountCents, 0),
+    totalCents: payload.totalCents || totalInCurrency(recs, payload.currency || 'USD'),
+    ownShareCents: Math.max(0, (payload.totalCents || 0) - totalInCurrency(recs, payload.currency || 'USD')),
     evidenceImageDataUrl: payload.evidenceImageDataUrl || '',
     transcript: payload.transcript || '',
     recipients: recs,
@@ -1102,23 +1157,25 @@ function requestDetailScreen(reqId) {
   const req = reimbursementsList.find(r => r.id === reqId);
   if (!req) return screenHeader('Request not found', '', 'activity') + `<div class="narrow card"><p>Request not found.</p></div>`;
   const recs = req.recipients || [];
-  const totalReq = recs.reduce((s, r) => s + r.amountCents, 0);
-  const collected = recs.filter(r => r.status === 'Paid').reduce((s, r) => s + r.amountCents, 0);
+  const currency = req.currency || 'USD';
+  const totalReq = totalInCurrency(recs, currency);
+  const collected = totalInCurrency(recs.filter(r => r.status === 'Paid'), currency);
   const waitingCount = recs.filter(r => r.status === 'Waiting for payment').length;
   const activeQr = recs.find(r => r.id === selectedReqQr.recipientId) || recs[0];
   const curr = req.currency || recs[0]?.currency || 'USD';
   const pct = totalReq > 0 ? Math.min(1, collected / totalReq).toFixed(4) : '0';
 
-  return screenHeader(escapeHtml(req.title || req.merchant), `${req.id} · ${req.demo ? 'Demo mode' : 'External link/gateway'}`, 'activity', badge(waitingCount > 0 ? `${waitingCount} waiting` : `${recs.length - waitingCount}/${recs.length} settled`, waitingCount > 0 ? 'preview' : ''))
+  return screenHeader(escapeHtml(req.title || req.merchant), `${req.id} · ${req.demo ? 'Practice mode' : 'External link/gateway'}`, 'activity', badge(waitingCount > 0 ? `${waitingCount} waiting` : `${recs.length - waitingCount}/${recs.length} settled`, waitingCount > 0 ? 'preview' : ''))
     + `<div class="split-grid">
       <section class="card">
         <h2>Summary &amp; evidence</h2>
         <div class="row"><span>Collected</span><b class="money">${cents(collected, curr, true)} / ${cents(totalReq, curr, true)}</b></div>
+        ${req.ownShareCents > 0 ? `<div class="row"><span>Your share</span><b class="money">${cents(req.ownShareCents, curr, true)}</b></div>` : ''}
         <div class="progress"><i style="transform:scaleX(${pct})"></i></div>
         ${req.dueDate ? `<div class="row"><span>Due date</span><b>${escapeHtml(req.dueDate)}</b></div>` : ''}
         ${req.evidenceImageDataUrl ? `<img src="${escapeHtml(req.evidenceImageDataUrl)}" alt="Receipt evidence" class="crop-canvas" style="margin:10px 0">` : ''}
         ${(req.items || []).map(i => `<div class="row"><span>${escapeHtml(i.name)}</span><b class="money">${cents(i.amountCents, curr)}</b></div>`).join('')}
-        <div class="callout">${svg('alert')}<span>${req.demo ? 'Demo requests automatically advance from Waiting for payment and create a simulated receipt.' : 'Personal reimbursement link. PayPal commercial checkout applies only to Demo Merchant SS-001.'}</span></div>
+        <div class="callout">${svg('alert')}<span>${req.demo ? 'Practice requests automatically advance from Waiting for payment and create a simulated receipt.' : 'Personal reimbursement link. PayPal commercial checkout applies only to Sandbox Merchant SS-001.'}</span></div>
       </section>
 
       <section class="card">
@@ -1129,7 +1186,7 @@ function requestDetailScreen(reqId) {
           return `<div class="draft-row-card ${r.deliveryStatus === 'Failed' ? 'needs-fix' : ''} ${flash}">
             <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
               <div>
-                <b>${escapeHtml(r.name)} · <span class="money">${cents(r.amountCents, r.currency || curr, true)}</span></b><br>
+                <b>${escapeHtml(r.name)} ${r.status === 'Paid' ? 'paid' : 'owes'} <span class="money">${cents(r.amountCents, r.currency || curr, true)}</span></b><br>
                 <small class="sub">${escapeHtml(r.reason)}${r.receiptRef ? ` · Receipt: <code>${escapeHtml(r.receiptRef)}</code>` : ''}</small>
               </div>
               <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -1173,7 +1230,7 @@ async function shareReqLink(reqId, recId) {
   const rec = req?.recipients?.find(x => x.id === recId);
   if (!rec) return;
   const u = rec.shareUrl || (location.href.split('#')[0] + '#req/' + rec.shareToken);
-  if (navigator.share) { try { await navigator.share({ title: `SplitSync · ${req.title}`, text: `${rec.name}: ${cents(rec.amountCents, rec.currency || 'USD')} for ${rec.reason}`, url: u }); return; } catch {} }
+  if (navigator.share) { try { await navigator.share({ title: `PayPal Hackathon · ${req.title}`, text: `${rec.name}: ${cents(rec.amountCents, rec.currency || 'USD')} for ${rec.reason}`, url: u }); return; } catch {} }
   await copyReqLink(reqId, recId);
 }
 
@@ -1217,14 +1274,14 @@ function activityScreen() {
   </div>`;
 }
 
-// ---------- Ask SplitSync: Real Multi-Turn Voice Conversation (#ask) ----------
+// ---------- Ask AI: Real Multi-Turn Voice Conversation (#ask) ----------
 function openAskSplitSync() {
   go('ask');
 }
 
 function askScreen() {
   const voiceSupported = true;
-  return screenHeader('Ask SplitSync', 'Speak, type, or attach a bill in one conversation', 'home', `<button type="button" class="btn-ghost-sm" onclick="toggleAskVoice()">${svg(askVoiceOn ? 'volume' : 'mute')}<span>Voice ${askVoiceOn ? 'ON' : 'OFF'}</span></button>`)
+  return screenHeader('Ask AI', 'Type, dictate, or attach a receipt', 'home', `<button type="button" class="btn-ghost-sm" onclick="toggleAskVoice()">${svg(askVoiceOn ? 'volume' : 'mute')}<span>Voice ${askVoiceOn ? 'ON' : 'OFF'}</span></button>`)
     + `<div class="chat-shell">
       ${chatAttachedBill || chatAttachedImg ? renderAskReceiptCard() : ''}
       <div class="chat-thread" aria-live="polite">
@@ -1247,20 +1304,20 @@ function askScreen() {
         <div class="composer-row">
           <button type="button" class="btn-ghost-sm" onclick="triggerAskAttachmentMenu()" aria-label="Attach receipt">${svg('paperclip')}</button>
           <input id="ask-attach-file" type="file" accept="image/png,image/jpeg,image/webp" hidden onchange="handleAskFileUpload(this)">
-          <label for="ask-input" class="sr-only">Message SplitSync</label>
+          <label for="ask-input" class="sr-only">Message AI</label>
           <textarea id="ask-input" rows="1" value="${escapeHtml(askComposerText)}" oninput="askComposerText = this.value" placeholder="${voiceSupported ? 'Type or tap Mic to speak…' : 'Type a payment or split request…'}" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();submitAskTurn();}">${escapeHtml(askComposerText)}</textarea>
           <button type="button" class="mic-btn ${micState === 'listening' ? 'recording' : ''}" onclick="${micState === 'listening' ? 'stopAskMic()' : 'startAskMic()'}" ${micState === 'transcribing' ? 'disabled' : ''} aria-label="${micState === 'listening' ? 'Stop recording' : 'Start voice recording'}">
             ${svg(micState === 'listening' ? 'stop' : 'mic')}
             <span>${micState === 'listening' ? 'Stop' : micState === 'transcribing' ? '…' : 'Mic'}</span>
           </button>
-          <button type="button" class="btn btn-primary" onclick="submitAskTurn()" ${askBusy || !askComposerText.trim() ? '' : ''}>Send</button>
+          <button type="button" class="btn btn-primary" onclick="submitAskTurn()" ${askBusy || micState === 'listening' || micState === 'transcribing' ? 'disabled' : ''}>Send</button>
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;flex-wrap:wrap;gap:8px">
           <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer">
             <input type="checkbox" ${askAutoSendMic ? 'checked' : ''} onchange="askAutoSendMic = this.checked" style="width:15px;height:15px">
             Auto-send after mic transcription
           </label>
-          <button type="button" class="btn-ghost-sm" onclick="useAskSampleReceipt()">${svg('receipt')}<span>Use demo receipt</span></button>
+          <button type="button" class="btn-ghost-sm" onclick="useAskSampleReceipt()">${svg('receipt')}<span>Use sample receipt</span></button>
         </div>
       </div>
     </div>`;
@@ -1270,17 +1327,112 @@ function renderAssistantBubble(msg) {
   const isLatest = chatHistory.filter(x => x.role === 'assistant').at(-1)?.id === msg.id;
   const showDraft = isLatest && chatDraft && chatDraft.recipients?.length;
   return `<div class="chat-bubble assistant">
-    <small class="sub" style="font-weight:800;display:block;margin-bottom:4px">SplitSync${msg.modelUsed ? ` · ${escapeHtml(msg.modelUsed)}` : ''}</small>
+    <small class="sub" style="font-weight:800;display:block;margin-bottom:4px">AI</small>
     <p style="color:var(--navy);font-weight:600">${escapeHtml(msg.text)}</p>
     ${isLatest ? `<div class="chip-row" style="margin-top:10px;align-items:center">
-      ${askAudioState === 'loading' ? `<small class="sub">Synthesizing voice…</small>` : ''}
+      ${askAudioState === 'loading' ? `<small class="sub">Synthesizing voice…</small><button type="button" class="btn-ghost-sm" onclick="stopAskPlayback()">Stop audio</button>` : ''}
       ${askAudioState === 'playing' ? `<button type="button" class="btn-ghost-sm" onclick="stopAskPlayback()">${svg('stop')}<span>Stop audio</span></button><small class="sub" style="color:var(--teal-ink);font-weight:700">Playing…</small>` : ''}
-      ${askAudioState === 'blocked' ? `<button type="button" class="btn btn-secondary" onclick="playCurrentAskAudio(true)">${svg('play')}<span>Play reply</span></button>` : ''}
-      ${['ready', 'idle', 'unavailable'].includes(askAudioState) && askAudioSrc ? `<button type="button" class="btn-ghost-sm" onclick="playCurrentAskAudio(true)">${svg('volume')}<span>Replay</span></button>` : ''}
+      ${askAudioState === 'blocked' ? `<button type="button" class="btn btn-secondary" onclick="playCurrentAskAudio(true, ttsEpoch, chatDraft?.intent === 'send' && chatDraft.recipients.length === 1 && !chatDraft.needsClarification)">${svg('play')}<span>Play reply</span></button>` : ''}
+      ${['ready', 'idle', 'unavailable'].includes(askAudioState) && askAudioSrc ? `<button type="button" class="btn-ghost-sm" onclick="playCurrentAskAudio(true, ttsEpoch, chatDraft?.intent === 'send' && chatDraft.recipients.length === 1 && !chatDraft.needsClarification)">${svg('volume')}<span>Replay</span></button>` : ''}
       ${askAudioState === 'unavailable' && askAudioError ? `<small class="sub" style="color:var(--amber)">${escapeHtml(askAudioError)}</small>` : ''}
     </div>` : ''}
     ${showDraft ? renderInlineAskDraft() : ''}
   </div>`;
+}
+
+function validAskPaymentGroup() {
+  const rows = chatDraft?.recipients || [];
+  return chatDraft?.intent === 'send' && rows.length > 1 && rows.length <= 20 &&
+    new Set(rows.map(r => r.contactId)).size === rows.length &&
+    rows.every(r => r.known && !r.ambiguous && contactsList.some(c => c.id === r.contactId) &&
+      Number.isInteger(r.amountCents) && r.amountCents > 0 && r.amountCents <= 100000000 &&
+      CURRENCIES.includes(r.currency));
+}
+
+function openGroupPaymentReview() {
+  if (askBusy || !validAskPaymentGroup()) {
+    toast('Check the recipients and amounts before continuing.');
+    return;
+  }
+  chatDraft.attemptId ||= 'group-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+  go('review-payment-draft');
+}
+
+function groupPaymentReviewScreen() {
+  if (!validAskPaymentGroup()) return screenHeader('Review payments', '', 'ask');
+  const rows = chatDraft.recipients;
+  const totals = new Map();
+  const payments = rows.map(r => {
+    const contact = contactsList.find(c => c.id === r.contactId);
+    const quote = fxQuote(r.amountCents, r.currency, contact.currency);
+    totals.set(r.currency, (totals.get(r.currency) || 0) + r.amountCents);
+    return `<div class="row"><div class="grow"><b>${escapeHtml(contact.flag || '')} ${escapeHtml(contact.name)}</b>
+      ${quote.sourceCurrency === quote.targetCurrency ? '' : `<br><small class="sub">Estimated receipt · ${cents(quote.targetAmountCents, quote.targetCurrency, true)}</small>`}</div>
+      <b class="money">${cents(r.amountCents, r.currency, true)}</b></div>`;
+  }).join('');
+  return screenHeader('Review ' + rows.length + ' payments', 'Check what each person will receive.', 'ask', badge('Practice mode', 'preview')) +
+    `<section class="narrow card">
+      ${payments}
+      <div class="rule"></div>
+      ${[...totals].map(([currency, total]) => `<div class="row"><b>Total in ${currency}</b><b class="money">${cents(total, currency, true)}</b></div>`).join('')}
+      ${chatDraft.error ? `<p role="alert">${escapeHtml(chatDraft.error)}</p>` : ''}
+      <div class="actions"><button type="button" class="btn btn-primary full" onclick="confirmGroupPayments()" ${chatDraft.paying ? 'disabled' : ''}>${chatDraft.paying ? 'Paying…' : 'Confirm practice payments'}</button></div>
+    </section>`;
+}
+
+async function confirmGroupPayments() {
+  const draft = chatDraft;
+  if (draft?.paying || !draft?.attemptId || !validAskPaymentGroup()) return;
+  draft.paying = true;
+  draft.error = '';
+  render();
+  const payments = draft.recipients.map((r, index) => ({
+    clientTxId: draft.attemptId + '-' + index,
+    contactId: r.contactId,
+    sourceAmountCents: r.amountCents,
+    sourceCurrency: r.currency,
+    note: r.reason,
+  }));
+  try {
+    const connected = backendMode && ledger;
+    const transactions = connected
+      ? (await api('/api/organizer/demo-pay', {payments})).transactions
+      : payments.map(p => {
+          const contact = contactsList.find(c => c.id === p.contactId);
+          return {
+            ...p,
+            ...fxQuote(p.sourceAmountCents, p.sourceCurrency, contact.currency),
+            id: p.clientTxId,
+            type: 'demo-send',
+            recipientName: contact.name,
+            country: contact.country || '',
+            flag: contact.flag || '',
+            status: 'Completed',
+            demo: true,
+            createdAt: new Date().toISOString(),
+          };
+        });
+    const ids = new Set(transactions.map(tx => tx.id));
+    demoTransactions = [...transactions, ...demoTransactions.filter(tx => !ids.has(tx.id))];
+    if (!connected) saveLocalState();
+    groupPaymentReceipt = transactions;
+    if (chatDraft === draft) chatDraft = null;
+    if (location.hash === '#review-payment-draft') go('payment-draft-receipt');
+  } catch (_) {
+    draft.error = 'Could not confirm the practice payments. Try again.';
+  } finally {
+    draft.paying = false;
+    render();
+  }
+}
+
+function groupPaymentReceiptScreen() {
+  if (!groupPaymentReceipt.length) return activityScreen();
+  return screenHeader(groupPaymentReceipt.length + ' practice payments completed', '', 'activity', badge('Practice mode', 'preview')) +
+    `<section class="narrow card">
+      ${groupPaymentReceipt.map(tx => `<div class="row"><b>${escapeHtml(tx.flag || '')} ${escapeHtml(tx.recipientName)}</b><b class="money">${cents(tx.targetAmountCents ?? tx.sourceAmountCents, tx.targetCurrency || tx.sourceCurrency, true)} received</b></div>`).join('')}
+      <div class="actions"><a class="btn btn-primary full" href="#activity">View activity</a></div>
+    </section>`;
 }
 
 function renderInlineAskDraft() {
@@ -1291,14 +1443,24 @@ function renderInlineAskDraft() {
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
         <div>
           <b>${escapeHtml(r.flag || '')} ${escapeHtml(r.name)}</b> · <b class="money">${cents(q.sourceAmountCents, q.sourceCurrency, true)}</b>
-          ${q.sourceCurrency !== q.targetCurrency ? `<span class="sub"> (≈ ${cents(q.targetAmountCents, q.targetCurrency, true)} demo quote)</span>` : ''}
+          ${q.sourceCurrency !== q.targetCurrency ? `<span class="sub"> (≈ ${cents(q.targetAmountCents, q.targetCurrency, true)} reference estimate)</span>` : ''}
           <div class="sub">Note: “${escapeHtml(r.reason)}”</div>
         </div>
         <button type="button" class="btn btn-primary" onclick="handoffSendToReview()"><span>Review payment</span>${svg('arrow-right')}</button>
       </div>
     </div>`;
   }
-  const alloc = chatDraft.recipients.reduce((s, r) => s + (r.amountCents || 0), 0);
+  if (!chatDraft.editing && !chatDraft.needsClarification && validAskPaymentGroup()) {
+    return `<div class="fx-box">
+      <h2>Payment draft</h2>
+      ${chatDraft.recipients.map(r => `<div class="row"><b>${escapeHtml(r.name)}</b><b class="money">${cents(r.amountCents, r.currency, true)}</b></div>`).join('')}
+      <div class="actions">
+        <button type="button" class="btn btn-secondary" onclick="chatDraft.editing = true; render()">Edit draft</button>
+        <button type="button" class="btn btn-primary" onclick="openGroupPaymentReview()">Review ${chatDraft.recipients.length} payments</button>
+      </div>
+    </div>`;
+  }
+  const alloc = totalInCurrency(chatDraft.recipients.filter(r => r.contactId !== 'leah'), chatAttachedBill?.currency || chatDraft.recipients[0]?.currency || 'USD');
   const billTotal = chatAttachedBill?.totalCents || 0;
   return `<div style="margin-top:12px">
     ${chatDraft.needsClarification ? `<div class="callout warning" style="margin-top:0;margin-bottom:10px" role="alert">${svg('alert')}<span>${escapeHtml(chatDraft.clarificationPrompt || 'Confirm recipient details below or answer in chat.')}</span></div>` : ''}
@@ -1320,10 +1482,12 @@ function renderInlineAskDraft() {
       </div>
       ${!r.known ? `<div class="chip-row" style="margin-top:8px"><small class="sub">Pick contact:</small>${contactsList.filter(c => c.id !== 'leah').map(c => `<button type="button" class="chip" onclick="resolveChatDraftContact(${idx}, '${escapeHtml(c.id)}')">${escapeHtml(c.flag || '')} ${escapeHtml(c.name)}</button>`).join('')}</div>` : ''}
     </div>`).join('')}
-    ${billTotal > 0 ? `<div class="row"><span>Bill remaining unallocated</span><b class="money" style="color:${billTotal - alloc === 0 ? 'var(--teal-ink)' : 'var(--amber)'}">${cents(billTotal - alloc, chatAttachedBill.currency)}</b></div>` : ''}
+    ${billTotal > 0 ? `<div class="row"><span>Your share</span><b class="money" style="color:${billTotal - alloc === 0 ? 'var(--teal-ink)' : 'var(--amber)'}">${cents(Math.max(0, billTotal - alloc), chatAttachedBill.currency, true)}</b></div>` : ''}
     <div class="actions" style="margin-top:10px">
       <button type="button" class="btn btn-secondary" onclick="addChatDraftRow()">${svg('plus')}<span>Add person</span></button>
-      <button type="button" class="btn btn-primary" onclick="askConfirmSheetOpen = true; render()"><span>Create requests (${cents(alloc)})</span>${svg('arrow-right')}</button>
+      ${chatDraft.intent === 'send'
+        ? `<button type="button" class="btn btn-primary" onclick="openGroupPaymentReview()"><span>Review ${chatDraft.recipients.length} payments</span>${svg('arrow-right')}</button>`
+        : `<button type="button" class="btn btn-primary" onclick="askConfirmSheetOpen = true; render()"><span>Create requests (${cents(alloc)})</span>${svg('arrow-right')}</button>`}
     </div>
   </div>`;
 }
@@ -1337,7 +1501,7 @@ function renderAskConfirmSheet() {
     <div class="field-group">
       <label for="ask-confirm-channel">Settlement / delivery mode</label>
       <select id="ask-confirm-channel" onchange="askConfirmChannel = this.value">
-        <option value="demo" ${askConfirmChannel === 'demo' ? 'selected' : ''}>Demo mode (auto-settles in Activity)</option>
+        <option value="demo" ${askConfirmChannel === 'demo' ? 'selected' : ''}>Practice mode (auto-settles in Activity)</option>
         <option value="link" ${askConfirmChannel === 'link' ? 'selected' : ''}>Private link &amp; QR (stays Created until shared)</option>
         <option value="email" ${askConfirmChannel === 'email' ? 'selected' : ''}>Email gateway (${providers.emailConfigured ? 'configured' : 'not configured — stays Created'})</option>
         <option value="sms" ${askConfirmChannel === 'sms' ? 'selected' : ''}>SMS gateway (${providers.smsConfigured ? 'configured' : 'not configured — stays Created'})</option>
@@ -1415,7 +1579,7 @@ function useAskSampleReceipt() {
   chatAttachedRawImg = createSampleReceiptDataUrl();
   chatAttachedImg = chatAttachedRawImg;
   chatCropTop = 3; chatCropBottom = 3;
-  extractAskAttachedBill();
+  extractAskAttachedBill(true);
 }
 
 function updateAskCrop(topV, botV) {
@@ -1434,14 +1598,15 @@ function updateAskCrop(topV, botV) {
   img.src = chatAttachedRawImg;
 }
 
-async function extractAskAttachedBill() {
+async function extractAskAttachedBill(sample = false) {
   chatExtractState = 'loading'; chatExtractError = ''; chatAttachedBill = null;
   render();
-  if (!backendMode) {
+  if (sample) {
     chatAttachedBill = { merchant: 'Olive Kitchen', date: '2026-11-10', currency: 'USD', items: [{ name: 'Pasta Dinner Bowl', amountCents: 2000 }, { name: 'Craft Drinks (2)', amountCents: 1500 }, { name: 'Shared Herb Flatbread', amountCents: 700 }], taxCents: 0, tipCents: 0, totalCents: 4200, unreadableFields: [], totalMismatch: false };
     chatExtractState = 'ready'; render(); return;
   }
   try {
+    if (!ledger) throw new Error('Connect in Profile to extract receipt text, or enter the details here.');
     const res = await api('/api/organizer/extract-bill', { imageDataUrl: chatAttachedImg });
     chatAttachedBill = res; chatExtractState = 'ready'; render();
   } catch (e) {
@@ -1522,22 +1687,38 @@ function stopAskMic() {
 function parseLocalTurn(text) {
   const raw = String(text || '').trim();
   const low = raw.toLowerCase();
-  const sendIntent = /\bsend\b|\bpay\b/.test(low) && !/\bask\b|\brequest\b|\bsplit\b/.test(low);
+  const sendIntent = askTurnIntent(low) === 'send';
   const wordNum = { ten: 10, fifteen: 15, twenty: 20, thirty: 30, forty: 40, fifty: 50, eighty: 80, hundred: 100 };
   const rows = [];
-  const segs = sendIntent ? [raw] : raw.split(/\band\b|,|;/i);
-
+  const segs = raw.split(/\band\b|;/i);
+  const amountPattern = /-?[$¥£€₹]?(-?\d+(?:,\d{3})*(?:\.\d{1,2})?)|\b(ten|fifteen|twenty|thirty|forty|fifty|eighty|hundred)\b/gi;
+  const amounts = [...raw.matchAll(amountPattern)];
+  const sharedAmount = amounts.length === 1 && /\b(each|apiece)\b/i.test(raw) ? amounts[0] : null;
   for (const seg of segs) {
-    const mAmt = seg.match(/\$?(\d+(?:\.\d{1,2})?)|\b(ten|fifteen|twenty|thirty|forty|fifty|eighty|hundred)\b/i);
-    if (!mAmt) continue;
-    const valMajor = mAmt[1] ? Number(mAmt[1]) : (wordNum[mAmt[2].toLowerCase()] || 0);
+    const localAmount = [...seg.matchAll(amountPattern)][0];
+    const mAmt = localAmount || sharedAmount;
+    const matched = contactsList.find(c => new RegExp('\\b' + c.name.split(' ')[0] + '\\b', 'i').test(seg));
+    if (!mAmt && (!matched || !amounts.length)) continue;
+    const valMajor = !mAmt || mAmt[0].startsWith('-') ? 0 : mAmt[1] ? Number(mAmt[1].replaceAll(',', '')) : wordNum[mAmt[2].toLowerCase()];
     const valCents = Math.round(valMajor * 100);
-    const matched = contactsList.find(c => new RegExp('\\b' + c.name.split(' ')[0] + '\\b', 'i').test(seg))
-      || (segs.length === 1 ? contactsList.find(c => new RegExp('\\b' + c.name.split(' ')[0] + '\\b', 'i').test(raw)) : null);
-    const wordAfter = seg.match(/\b(?:ask|for|from|send|pay|to)\s+([A-Z][a-z]+)\b/);
+    const wordAfter = seg.match(/\b(?:ask|for|from|send|pay|give|to)\s+([A-Z][a-z]+)\b/);
     const rawName = matched ? matched.name : (wordAfter?.[1] || '');
-    const explicitUsd = /\bdollars?\b|\busd\b|\$/i.test(seg) || /\bdollars?\b|\busd\b|\$/i.test(raw);
-    const currency = explicitUsd ? 'USD' : (sendIntent && matched ? matched.currency : 'USD');
+    const context = localAmount ? seg : raw;
+    const before = mAmt ? context.slice(0, mAmt.index) : '';
+    const after = mAmt ? context.slice(mAmt.index + mAmt[0].length) : '';
+    const prefix = before.match(/(?:\b(?:USD|GBP|CAD|EUR|JPY|INR)|CA|US)\s*$/i)?.[0] || '';
+    const suffix = after.match(/^\s*(?:USD|GBP|CAD|EUR|JPY|INR|yen|pounds?|euros?|rupees?|dollars?)\b/i)?.[0] || '';
+    const currencyText = prefix + (mAmt?.[0] || '') + suffix;
+    const code = currencyText.match(/\b(USD|GBP|CAD|EUR|JPY|INR)\b/i)?.[1];
+    const currency = code?.toUpperCase()
+      || (/¥|\byen\b/i.test(currencyText) ? 'JPY' : '')
+      || (/£|\bpounds?\b/i.test(currencyText) ? 'GBP' : '')
+      || (/€|\beuros?\b/i.test(currencyText) ? 'EUR' : '')
+      || (/₹|\brupees?\b/i.test(currencyText) ? 'INR' : '')
+      || (currencyText.includes('CA$') ? 'CAD' : '')
+      || (/\$|\bdollars?\b/i.test(currencyText) ? 'USD' : '')
+      || (sendIntent ? matched?.currency : chatAttachedBill?.currency)
+      || 'USD';
     const noteMatch = seg.match(/(?:saying|for|note)\s+(.+)$/i) || raw.match(/(?:saying|for)\s+(.+)$/i);
     const note = (noteMatch?.[1] || (sendIntent ? 'Thanks' : 'Shared expense')).replace(/[.?!]+$/, '').trim();
     const q = fxQuote(valCents, currency, matched?.currency || currency);
@@ -1564,7 +1745,7 @@ function parseLocalTurn(text) {
     if (clarifyMatch) {
       const updated = chatDraft.recipients.map(r => r.known ? r : { ...r, name: clarifyMatch.name, contactId: clarifyMatch.id, country: clarifyMatch.country, flag: clarifyMatch.flag, known: true, unknownContact: false, ambiguous: false, targetCurrency: clarifyMatch.currency });
       const parts = updated.map(r => `${r.name} owes ${cents(r.amountCents, r.currency)} for ${r.reason}`);
-      return { intent: chatDraft.intent, recipients: updated, needsClarification: false, clarificationPrompt: '', modelUsed: 'Offline parser', replyText: `${parts.join(' and ')}. Ready to create both requests?` };
+      return { intent: chatDraft.intent, recipients: updated, resolvedContact: true, needsClarification: false, clarificationPrompt: '', modelUsed: 'Offline parser', replyText: `${parts.join(' and ')}. Ready to create both requests?` };
     }
   }
 
@@ -1578,6 +1759,8 @@ function parseLocalTurn(text) {
     const r = rows[0];
     const q = fxQuote(r.amountCents, r.currency, r.targetCurrency);
     replyText = `Prepared ${cents(q.sourceAmountCents, q.sourceCurrency, true)}${q.sourceCurrency !== q.targetCurrency ? ` (about ${cents(q.targetAmountCents, q.targetCurrency, true)})` : ''} for ${r.name}${r.country ? ` in ${r.country}` : ''} for ${r.reason}. Verify the recipient and amount before you pay.`;
+  } else if (intent === 'send') {
+    replyText = 'Review the payments when you’re ready.';
   } else {
     const parts = rows.map(r => `${r.name} owes ${cents(r.amountCents, r.currency)} for ${r.reason}`);
     replyText = parts.length === 2 ? `${parts[0]} and ${parts[1]}. Ready to create both requests?` : `${parts.join(', ')}. Ready to create?`;
@@ -1585,10 +1768,39 @@ function parseLocalTurn(text) {
   return { intent, recipients: rows, needsClarification, clarificationPrompt: needsClarification ? replyText : '', modelUsed: 'Offline parser', replyText };
 }
 
+function askTurnIntent(text, parsedIntent) {
+  const command = text.match(/\b(send|pay|transfer|give|request|charge|owes?|split|ask(?=\s+\w+\s+for\b))\b/i)?.[1].toLowerCase();
+  if (command) return ['send', 'pay', 'transfer', 'give'].includes(command) ? 'send' : 'request';
+  return chatDraft?.intent || parsedIntent || 'request';
+}
+
+function equalReceiptDraft(text) {
+  if (!(chatAttachedBill?.totalCents > 0)) return null;
+  const match = text.match(/^split\b[^0-9]*?\b(?:between|among|with)\s+(.+?)[.!?]?$/i);
+  if (!match) return null;
+  const people = match[1].split(/\band\b|,/i).map(name => name.trim().toLowerCase()).filter(Boolean);
+  const selected = people.map(name => contactsList.find(c =>
+    c.name.toLowerCase() === name || (name === 'me' && c.id === 'leah')));
+  if (selected.includes(undefined)) return null;
+  const contacts = [...new Set(selected)];
+  if (contacts.length < 2) return null;
+  const {currency, totalCents, merchant} = chatAttachedBill;
+  const share = equalShare(totalCents, contacts.length, currency);
+  const recipients = contacts.map(contact => ({
+    name: contact.name, contactId: contact.id, known: true,
+    amountCents: contact.id === 'leah' ? totalCents - share * (contacts.length - 1) : share,
+    currency, targetCurrency: contact.currency, reason: merchant || 'Receipt split',
+  }));
+  return {
+    intent: 'request', recipients, needsClarification: share <= 0,
+    replyText: share > 0 ? 'I split the receipt evenly. Your share includes the remainder.' : 'This total is too small to split evenly.',
+  };
+}
+
 async function submitAskTurn(overrideText = null) {
   const inputEl = document.querySelector('#ask-input');
   const text = String(overrideText ?? (inputEl?.value ?? askComposerText)).trim();
-  if (!text || askBusy) return;
+  if (!text || askBusy || chatDraft?.paying || micState === 'listening' || micState === 'transcribing') return;
   cancelAskSpeech();
   askComposerText = '';
   if (inputEl) inputEl.value = '';
@@ -1596,10 +1808,11 @@ async function submitAskTurn(overrideText = null) {
   askBusy = true;
   render();
 
-  let parsed;
-  if (!backendMode || !ledger) {
+  const equalDraft = equalReceiptDraft(text);
+  let parsed = equalDraft;
+  if (!parsed && (!backendMode || !ledger)) {
     parsed = parseLocalTurn(text);
-  } else {
+  } else if (!parsed) {
     try {
       parsed = await api('/api/organizer/parse-request', {
         transcript: text,
@@ -1614,15 +1827,30 @@ async function submitAskTurn(overrideText = null) {
   }
 
   askBusy = false;
+  const intent = askTurnIntent(text, parsed.intent);
+  const replace = equalDraft || /\b(start over|replace (?:the |this )?draft|only (?:send|pay|give|request|charge))\b/i.test(text);
+  const updates = parsed.recipients || [];
+  const rows = !replace && !parsed.resolvedContact && intent === chatDraft?.intent ? [...chatDraft.recipients] : [];
+  for (const row of updates) {
+    const index = rows.findIndex(prior => prior.contactId && row.contactId
+      ? prior.contactId === row.contactId
+      : prior.name.trim().toLowerCase() === row.name.trim().toLowerCase());
+    if (index < 0) rows.push(row);
+    else rows[index] = row;
+  }
+  askConfirmSheetOpen = false;
   chatDraft = {
-    intent: parsed.intent || 'request',
-    recipients: parsed.recipients || [],
-    needsClarification: Boolean(parsed.needsClarification),
+    intent,
+    recipients: rows,
+    needsClarification: Boolean(parsed.needsClarification) || rows.some(r => r.ambiguous),
     clarificationPrompt: parsed.clarificationPrompt || '',
     modelUsed: parsed.modelUsed || '',
   };
-  const msgId = `a-${Date.now()}`;
-  const replyText = parsed.replyText || 'Draft updated.';
+  const msgId = 'a-' + Date.now();
+  const fullReply = intent === 'send' && rows.length > 1 && !chatDraft.needsClarification
+    ? 'Your draft has ' + rows.length + ' payments. Add another person or review the payments when you’re ready.'
+    : parsed.replyText || 'Draft updated.';
+  const replyText = fullReply.length > 390 ? fullReply.slice(0, 387) + '…' : fullReply;
   chatHistory.push({ id: msgId, role: 'assistant', text: replyText, modelUsed: parsed.modelUsed || '' });
   askAudioMsgId = msgId;
 
@@ -1645,8 +1873,11 @@ async function submitAskTurn(overrideText = null) {
   }
 
   render();
-  if (askVoiceOn) {
-    await synthesizeAndPlayAskReply(replyText, msgId, chatDraft.intent === 'send' && !chatDraft.needsClarification);
+  const advance = chatDraft.intent === 'send' && chatDraft.recipients.length === 1 && !chatDraft.needsClarification && Boolean(transferForm.contactId);
+  if (askVoiceOn && backendMode && ledger && ['#ask', '#talk'].includes(location.hash)) {
+    await synthesizeAndPlayAskReply(replyText, msgId, advance);
+  } else if (advance) {
+    go('review-transfer');
   }
 }
 
@@ -1662,7 +1893,7 @@ async function synthesizeAndPlayAskReply(text, msgId, autoTransitionSend = false
     return;
   }
   try {
-    const res = await api('/api/organizer/read-text', { text: text.slice(0, 390) }, 24000, ttsAbortCtrl.signal);
+    const res = await api('/api/organizer/read-text', { text }, 24000, ttsAbortCtrl.signal);
     if (myEpoch !== ttsEpoch) return; // Stale turn ignored cleanly!
     askAudioSrc = 'data:audio/wav;base64,' + res.audio;
     askAudioMsgId = msgId;
@@ -1713,13 +1944,17 @@ function handoffSendToReview() {
 
 function updateChatDraftRow(idx, field, val) {
   const r = chatDraft?.recipients?.[idx]; if (!r) return;
-  if (field === 'amount') r.amountCents = Math.max(0, Math.round((Number(val) || 0) * 100));
+  if (field === 'amount') {
+    r.amountCents = Math.max(0, Math.round((Number(val) || 0) * 100));
+    r.ambiguous = !r.known || r.amountCents <= 0;
+  }
   else if (field === 'name') {
     r.name = val;
     const match = contactsList.find(c => c.name.toLowerCase() === val.trim().toLowerCase());
     r.known = Boolean(match); r.contactId = match?.id || null; r.ambiguous = !match;
     if (match) { r.flag = match.flag; r.country = match.country; r.targetCurrency = match.currency; }
   } else r[field] = val;
+  chatDraft.attemptId = null;
 }
 
 function resolveChatDraftContact(idx, contactId) {
@@ -1728,6 +1963,7 @@ function resolveChatDraftContact(idx, contactId) {
   const r = chatDraft.recipients[idx];
   chatDraft.recipients[idx] = { ...r, name: c.name, contactId: c.id, flag: c.flag, country: c.country, targetCurrency: c.currency, known: true, unknownContact: false, ambiguous: false };
   chatDraft.needsClarification = chatDraft.recipients.some(x => x.ambiguous);
+  chatDraft.attemptId = null;
   render();
 }
 
@@ -1740,12 +1976,13 @@ function addChatDraftRow() {
 async function confirmAskRequests() {
   if (!chatDraft?.recipients?.length) return;
   cancelAskSpeech();
-  const valid = chatDraft.recipients.filter(r => r.name.trim() && r.amountCents > 0);
+  const valid = chatDraft.recipients.filter(r => r.contactId !== 'leah' && r.name.trim() && r.amountCents > 0);
   if (!valid.length) { toast('Add at least one recipient with a positive amount.'); return; }
-  const total = valid.reduce((s, r) => s + r.amountCents, 0);
+  const currency = chatAttachedBill?.currency || valid[0].currency || 'USD';
+  const total = totalInCurrency(valid, currency);
   const created = await persistRequestRecord({
     title: chatAttachedBill?.merchant || (valid.length === 1 ? `Request from ${valid[0].name}` : valid.map(r => r.name).join(', ')),
-    merchant: chatAttachedBill?.merchant || 'Ask SplitSync request',
+    merchant: chatAttachedBill?.merchant || 'Ask AI request',
     billDate: chatAttachedBill?.date || '',
     kind: chatAttachedBill ? 'receipt' : 'request',
     currency: chatAttachedBill?.currency || valid[0]?.currency || 'USD',
@@ -1777,15 +2014,15 @@ function scanBillScreen() {
   else if (billCameraState === 'denied') cameraFrame = `<div class="center"><div class="result-icon cancelled">${svg('receipt-camera')}</div><h2 style="color:#fff">Camera permission unavailable</h2><p style="color:#DCE1E8;margin-top:6px">Upload a receipt image or enter fields manually below.</p></div>`;
   else cameraFrame = `<span class="camera-badge">Receipt capture</span><div class="center"><div class="icon-box" style="width:56px;height:56px;margin:0 auto 12px">${svg('receipt-camera')}</div><h2 style="color:#fff">Capture a receipt</h2><p style="color:#DCE1E8;margin-top:6px">Align merchant and items, capture, or upload from device.</p></div>`;
 
-  return screenHeader('Scan Bill', 'Photograph or upload a receipt to create requests', 'home', badge('Demo mode', 'preview'))
+  return screenHeader('Scan Bill', 'Photograph or upload a receipt to create requests', 'home', badge('Practice mode', 'preview'))
     + `<div class="split-grid">
       <div>
         <div class="camera-frame">${cameraFrame}</div>
-        <div class="card" style="margin-top:14px">
-          <div class="actions" style="margin-top:0">
+        <div class="card bill-capture-actions">
+          <div class="actions">
             ${billCameraState === 'scanning'
               ? `<button type="button" class="btn btn-primary" onclick="captureStandaloneBillPhoto()">${svg('receipt-camera')}<span>Capture photo</span></button><button type="button" class="btn btn-secondary" onclick="stopStandaloneBillCamera()">Stop camera</button>`
-              : `<button type="button" class="btn btn-primary" onclick="startStandaloneBillCamera()">${svg('receipt-camera')}<span>${hasPhoto ? 'Retake photo' : 'Open camera'}</span></button><button type="button" class="btn btn-secondary" onclick="useStandaloneDemoReceipt()">${svg('receipt')}<span>Use demo receipt</span></button>`}
+              : `<button type="button" class="btn btn-primary" onclick="startStandaloneBillCamera()">${svg('receipt-camera')}<span>${hasPhoto ? 'Retake photo' : 'Open camera'}</span></button><button type="button" class="btn btn-secondary" onclick="useStandaloneDemoReceipt()">${svg('receipt')}<span>Use sample receipt</span></button>`}
           </div>
           <div class="field-group">
             <label for="standalone-bill-upload">Upload photo (PNG / JPEG / WebP)</label>
@@ -1797,7 +2034,7 @@ function scanBillScreen() {
       </div>
       <div class="card">
         <h2>Extracted details</h2>
-        ${billExtractState === 'idle' && !billDraft ? `<p class="sub" style="margin-top:8px">Capture or upload a receipt photo (or tap <b>Use demo receipt</b>) to extract fields.</p>` : ''}
+        ${billExtractState === 'idle' && !billDraft ? `<p class="sub" style="margin-top:8px">Capture or upload a receipt photo (or tap <b>Use sample receipt</b>) to extract fields.</p>` : ''}
         ${billExtractState === 'loading' ? `<div class="callout">${svg('sparkles')}<span>Extracting merchant, line items, and total…</span></div><div class="skeleton" style="margin-top:10px;width:85%"></div><div class="skeleton" style="width:65%"></div>` : ''}
         ${billExtractState === 'error' ? `<div class="callout warning" role="alert">${svg('alert')}<span>${escapeHtml(billExtractError)} Correct fields below manually.</span></div>` : ''}
         ${billDraft && billExtractState !== 'loading' ? renderStandaloneBillEditor() : ''}
@@ -1805,28 +2042,52 @@ function scanBillScreen() {
     </div>`;
 }
 
+function billAmountCents(value) {
+  const amount = Math.max(0, Number(value) || 0);
+  return billDraft.currency === 'JPY' ? Math.round(amount) * 100 : Math.round(amount * 100);
+}
+
+function changeBillCurrency(currency) {
+  billDraft.currency = currency;
+  if (currency === 'JPY') {
+    billDraft.totalCents = Math.round(billDraft.totalCents / 100) * 100;
+    for (const item of billDraft.items || []) {
+      item.amountCents = Math.round(item.amountCents / 100) * 100;
+    }
+    billDraft.taxCents = Math.round((billDraft.taxCents || 0) / 100) * 100;
+    billDraft.tipCents = Math.round((billDraft.tipCents || 0) / 100) * 100;
+  }
+  render();
+}
+
 function renderStandaloneBillEditor() {
   const b = billDraft;
+  const currency = normCurr(b.currency);
+  const decimals = currency === 'JPY' ? 0 : 2;
+  const step = decimals ? '0.01' : '1';
   const sum = (b.items || []).reduce((s, i) => s + (i.amountCents || 0), 0) + (b.taxCents || 0) + (b.tipCents || 0);
   const mismatch = b.totalCents > 0 && sum > 0 && Math.abs(b.totalCents - sum) > 1;
   const chosen = contactsList.filter(c => billRecipientIds.includes(c.id));
-  return `<div style="margin-top:8px">
-    ${mismatch ? `<div class="callout error">${svg('alert')}<span>Items + tax + tip = ${cents(sum)} vs total ${cents(b.totalCents)}.</span><button type="button" class="btn-ghost-sm" onclick="billDraft.totalCents=${sum}; render()">Match</button></div>` : ''}
-    <div class="split-grid" style="gap:8px;margin-top:8px">
+  return `<div class="bill-editor">
+    ${mismatch ? `<div class="callout error">${svg('alert')}<span>Items + tax + tip = ${cents(sum, currency, true)} vs total ${cents(b.totalCents, currency, true)}.</span><button type="button" class="btn-ghost-sm" onclick="billDraft.totalCents=${sum}; render()">Match</button></div>` : ''}
+    <div class="bill-fields">
       <div class="field-group" style="margin-top:0"><label for="sb-merch">Merchant</label><input id="sb-merch" value="${escapeHtml(b.merchant)}" oninput="billDraft.merchant = this.value"></div>
-      <div class="field-group" style="margin-top:0"><label for="sb-total">Total (${escapeHtml(b.currency || 'USD')})</label><input id="sb-total" type="number" step="0.01" value="${((b.totalCents || 0) / 100).toFixed(2)}" oninput="billDraft.totalCents = Math.round((Number(this.value)||0)*100)"></div>
+      <div class="bill-adjacent-fields">
+        <div class="field-group"><label for="sb-total">Total</label><input id="sb-total" type="number" min="0" step="${step}" value="${((b.totalCents || 0) / 100).toFixed(decimals)}" oninput="billDraft.totalCents = billAmountCents(this.value)"></div>
+        <div class="field-group"><label for="sb-currency">Currency</label><select id="sb-currency" onchange="changeBillCurrency(this.value)">${CURRENCIES.map(code => `<option value="${code}" ${code === currency ? 'selected' : ''}>${code}</option>`).join('')}</select></div>
+      </div>
     </div>
-    <label style="font-size:13px;font-weight:800;display:block;margin:10px 0 6px">Items</label>
-    ${(b.items || []).map((it, idx) => `<div style="display:flex;gap:6px;margin-bottom:6px">
-      <input aria-label="Bill item ${idx + 1}" style="flex:2;min-height:40px;padding:8px;border:1px solid var(--line);border-radius:10px" value="${escapeHtml(it.name)}" oninput="billDraft.items[${idx}].name = this.value">
-      <input aria-label="Bill amount ${idx + 1}" type="number" step="0.01" style="flex:1;min-height:40px;padding:8px;border:1px solid var(--line);border-radius:10px" value="${((it.amountCents || 0) / 100).toFixed(2)}" oninput="billDraft.items[${idx}].amountCents = Math.round((Number(this.value)||0)*100)">
+    <h3>Line items</h3>
+    ${(b.items || []).map((it, idx) => `<div class="bill-adjacent-fields bill-item">
+      <div class="field-group"><label for="bill-item-${idx}">Item name</label><input id="bill-item-${idx}" value="${escapeHtml(it.name)}" oninput="billDraft.items[${idx}].name = this.value"></div>
+      <div class="field-group"><label for="bill-amount-${idx}">Amount (${currency})</label><input id="bill-amount-${idx}" type="number" min="0" step="${step}" value="${((it.amountCents || 0) / 100).toFixed(decimals)}" oninput="billDraft.items[${idx}].amountCents = billAmountCents(this.value)"></div>
     </div>`).join('')}
-    <label style="font-size:13px;font-weight:800;display:block;margin:12px 0 6px">Select contacts to split with</label>
-    <div class="chip-row">
-      ${contactsList.filter(c => c.id !== 'leah').map(c => `<button type="button" class="chip ${billRecipientIds.includes(c.id) ? 'selected' : ''}" onclick="toggleBillRecipient('${escapeHtml(c.id)}')">${escapeHtml(c.flag || '')} ${escapeHtml(c.name)}</button>`).join('')}
+    <h3>Split with</h3>
+    <div class="contact-cards">
+      ${contactsList.filter(c => c.id !== 'leah').map(c => `<button type="button" class="contact-card" aria-pressed="${billRecipientIds.includes(c.id)}" onclick="toggleBillRecipient('${escapeHtml(c.id)}')"><span aria-hidden="true">${escapeHtml(c.flag || '')}</span><span><b>${escapeHtml(c.name)}</b><small>${escapeHtml(c.currency || 'USD')}</small></span></button>`).join('')}
     </div>
     <div class="actions">
-      <button type="button" class="btn btn-secondary" onclick="handoffBillToAsk()">${svg('mic')}<span>Split in Ask SplitSync</span></button>
+      <button type="button" class="btn btn-secondary" onclick="handoffBillToAsk()">${svg('mic')}<span>Split in Ask AI</span></button>
       <button type="button" class="btn btn-primary" onclick="createRequestsFromBill()" ${!chosen.length || !(b.totalCents > 0) ? 'disabled' : ''}><span>Create requests</span>${svg('arrow-right')}</button>
     </div>
   </div>`;
@@ -1844,8 +2105,9 @@ async function createRequestsFromBill() {
   const chosen = contactsList.filter(c => billRecipientIds.includes(c.id));
   if (!chosen.length || !billDraft || !(billDraft.totalCents > 0)) return;
   const total = billDraft.totalCents;
-  const share = Math.floor(total / chosen.length);
-  const recs = chosen.map((c, i) => ({ name: c.name, contactId: c.id, amountCents: i === 0 ? total - share * (chosen.length - 1) : share, currency: billDraft.currency || 'USD', targetCurrency: c.currency || 'USD', reason: billDraft.merchant || 'Receipt split' }));
+  const share = equalShare(total, chosen.length, billDraft.currency);
+  if (share <= 0) { toast('The total is too small for everyone to get a positive share.'); return; }
+  const recs = chosen.map(c => ({ name: c.name, contactId: c.id, amountCents: share, currency: billDraft.currency || 'USD', targetCurrency: c.currency || 'USD', reason: billDraft.merchant || 'Receipt split' }));
   const created = await persistRequestRecord({ title: billDraft.merchant || 'Receipt split', merchant: billDraft.merchant || 'Photographed bill', billDate: billDraft.date || '', kind: 'receipt', currency: billDraft.currency || 'USD', items: billDraft.items || [], taxCents: billDraft.taxCents || 0, tipCents: billDraft.tipCents || 0, totalCents: total, evidenceImageDataUrl: billCroppedImage || billRawImage, channel: 'demo', demoAutoSettle: true, recipients: recs });
   if (created) go(`request/${created.id}`);
 }
@@ -1859,7 +2121,7 @@ async function startStandaloneBillCamera() {
   } catch (e) {
     const denied = e?.name === 'NotAllowedError' || e?.name === 'PermissionDeniedError';
     billCameraState = denied ? 'denied' : 'unavailable';
-    billCameraMessage = denied ? 'Camera permission denied. Upload a photo or use manual entry.' : 'Camera hardware unavailable here. Upload a photo or use demo receipt.';
+    billCameraMessage = denied ? 'Camera permission denied. Upload a photo or use manual entry.' : 'Camera hardware unavailable here. Upload a photo or use sample receipt.';
     render();
   }
 }
@@ -1878,21 +2140,21 @@ function handleStandaloneBillUpload(input) {
 }
 function useStandaloneDemoReceipt() {
   stopStreams(); billCameraState = 'ready'; billRawImage = createSampleReceiptDataUrl(); billCroppedImage = billRawImage;
-  extractStandaloneBill();
+  extractStandaloneBill(true);
 }
-async function extractStandaloneBill() {
+async function extractStandaloneBill(sample = false) {
   billExtractState = 'loading'; billExtractError = ''; billDraft = null; render();
-  if (!backendMode) {
+  if (sample) {
     billDraft = { merchant: 'Olive Kitchen', date: '2026-11-10', currency: 'USD', items: [{ name: 'Pasta Dinner Bowl', amountCents: 2000 }, { name: 'Craft Drinks (2)', amountCents: 1500 }, { name: 'Shared Herb Flatbread', amountCents: 700 }], taxCents: 0, tipCents: 0, totalCents: 4200, unreadableFields: [], totalMismatch: false };
     billExtractState = 'ready'; render(); return;
   }
-  try { billDraft = await api('/api/organizer/extract-bill', { imageDataUrl: billCroppedImage }); billExtractState = 'ready'; render(); }
+  try { if (!ledger) throw new Error('Connect in Profile to extract receipt text, or enter the details here.'); billDraft = await api('/api/organizer/extract-bill', { imageDataUrl: billCroppedImage }); billExtractState = 'ready'; render(); }
   catch (e) { billExtractState = 'error'; billExtractError = e.message; billDraft = { merchant: '', date: '', currency: 'USD', items: [{ name: '', amountCents: 0 }], taxCents: 0, tipCents: 0, totalCents: 0 }; render(); }
 }
 
 // ---------- Rent Flow (Starts Blank with "Create rent request" + Opt-in Save Rule) ----------
 function openRentFlow() {
-  rentForm = { creating: false, contactIds: [], amountStr: '', currency: 'USD', dueDate: '2026-12-01', mode: 'equal', customAmounts: {}, saveRule: false, busy: false, error: '' };
+  rentForm = { creating: false, contactIds: [], amountStr: '', currency: 'USD', dueDate: '', mode: 'equal', customAmounts: {}, saveRule: false, busy: false, error: '' };
   go('rent');
 }
 
@@ -1900,16 +2162,17 @@ function applySavedRentRule() {
   if (!savedRentRule) return;
   rentForm.creating = true;
   rentForm.contactIds = [...(savedRentRule.contactIds || [])];
-  rentForm.amountStr = ((savedRentRule.totalCents || 0) / 100).toFixed(2);
   rentForm.currency = savedRentRule.currency || 'USD';
+  rentForm.amountStr = ((savedRentRule.totalCents || 0) / 100).toFixed(rentForm.currency === 'JPY' ? 0 : 2);
   rentForm.mode = savedRentRule.mode || 'equal';
-  rentForm.customAmounts = { ...(savedRentRule.customShares || {}) };
+  rentForm.customAmounts = Object.fromEntries(Object.entries(savedRentRule.customShares || {})
+    .map(([id, amountCents]) => [id, (amountCents / 100).toFixed(rentForm.currency === 'JPY' ? 0 : 2)]));
   render();
 }
 
 function rentScreen() {
   if (!rentForm.creating) {
-    return screenHeader('Rent', 'Create and track shared household rent requests', 'home', badge('Demo mode', 'preview'))
+    return screenHeader('Rent', 'Create and track shared household rent requests', 'home', badge('Practice mode', 'preview'))
       + `<div class="narrow card center">
         <h2>No active rent request</h2>
         <p class="sub" style="margin-top:6px">Choose household roommates, set total rent and due date, and pick equal or custom shares.</p>
@@ -1919,39 +2182,40 @@ function rentScreen() {
   }
   const chosen = contactsList.filter(c => rentForm.contactIds.includes(c.id));
   const totalCents = Math.round((Number(rentForm.amountStr) || 0) * 100);
-  const perShare = chosen.length ? Math.floor(totalCents / chosen.length) : 0;
-  return screenHeader('Create rent request', 'Select roommates, due date, and share split', 'home', badge('Demo mode', 'preview'))
+  const perShare = chosen.length ? equalShare(totalCents, chosen.length, rentForm.currency) : 0;
+  return screenHeader('Create rent request', 'Select roommates, due date, and share split', 'home', badge('Practice mode', 'preview'))
     + `<div class="narrow card">
       <label style="font-size:13px;font-weight:800;display:block;margin-bottom:6px">Household contacts</label>
       <div class="chip-row" style="margin-bottom:12px">
         ${contactsList.map(c => `<button type="button" class="chip ${rentForm.contactIds.includes(c.id) ? 'selected' : ''}" onclick="toggleRentContact('${escapeHtml(c.id)}')">${escapeHtml(c.flag || '')} ${escapeHtml(c.name)}</button>`).join('')}
       </div>
       <div class="split-grid" style="gap:10px">
-        <div class="field-group" style="margin-top:0"><label for="rent-amt">Rent amount</label><input id="rent-amt" type="number" step="0.01" value="${escapeHtml(rentForm.amountStr)}" oninput="rentForm.amountStr = this.value; render()" placeholder="0.00"></div>
-        <div class="field-group" style="margin-top:0"><label for="rent-curr">Currency</label><select id="rent-curr" onchange="rentForm.currency = this.value; render()">${CURRENCIES.map(c => `<option value="${c}" ${rentForm.currency === c ? 'selected' : ''}>${c}</option>`).join('')}</select></div>
+        <div class="field-group" style="margin-top:0"><label for="rent-amt">Rent amount</label><input id="rent-amt" type="number" step="0.01" value="${escapeHtml(rentForm.amountStr)}" oninput="rentForm.amountStr = this.value; rentForm.review = false; render()" placeholder="0.00"></div>
+        <div class="field-group" style="margin-top:0"><label for="rent-curr">Currency</label><select id="rent-curr" onchange="rentForm.currency = this.value; rentForm.review = false; render()">${CURRENCIES.map(c => `<option value="${c}" ${rentForm.currency === c ? 'selected' : ''}>${c}</option>`).join('')}</select></div>
       </div>
       <div class="split-grid" style="gap:10px;margin-top:10px">
-        <div class="field-group" style="margin-top:0"><label for="rent-due">Due date</label><input id="rent-due" type="date" value="${escapeHtml(rentForm.dueDate)}" oninput="rentForm.dueDate = this.value"></div>
+        <div class="field-group" style="margin-top:0"><label for="rent-due">Due date</label><input id="rent-due" type="date" value="${escapeHtml(rentForm.dueDate)}" oninput="rentForm.dueDate = this.value; rentForm.review = false;"></div>
         <div class="field-group" style="margin-top:0">
           <label>Share method</label>
           <div class="chip-row" style="margin-top:0">
-            <button type="button" class="chip ${rentForm.mode === 'equal' ? 'selected' : ''}" onclick="rentForm.mode='equal'; render()">Equal</button>
-            <button type="button" class="chip ${rentForm.mode === 'custom' ? 'selected' : ''}" onclick="rentForm.mode='custom'; render()">Custom</button>
+            <button type="button" class="chip ${rentForm.mode === 'equal' ? 'selected' : ''}" onclick="rentForm.mode='equal'; rentForm.review = false; render()">Equal</button>
+            <button type="button" class="chip ${rentForm.mode === 'custom' ? 'selected' : ''}" onclick="rentForm.mode='custom'; rentForm.review = false; render()">Custom</button>
           </div>
         </div>
       </div>
       ${chosen.length && totalCents > 0 ? `<div class="rule"></div>${chosen.map((c, idx) => {
-        const eq = idx === 0 ? totalCents - perShare * (chosen.length - 1) : perShare;
+        const eq = c.id === 'leah' ? totalCents - perShare * (chosen.length - 1) : perShare;
         const val = rentForm.mode === 'custom' ? (rentForm.customAmounts[c.id] ?? (eq / 100).toFixed(2)) : (eq / 100).toFixed(2);
-        return `<div class="row"><span>${escapeHtml(c.flag || '')} <b>${escapeHtml(c.name)}</b></span>${rentForm.mode === 'custom' ? `<input aria-label="Rent share for ${escapeHtml(c.name)}" type="number" step="0.01" style="width:110px;min-height:38px;padding:6px 10px;border:1px solid var(--line);border-radius:8px" value="${escapeHtml(val)}" oninput="rentForm.customAmounts['${escapeHtml(c.id)}'] = this.value">` : `<b class="money">${cents(eq, rentForm.currency, true)}</b>`}</div>`;
+        return `<div class="row"><span>${escapeHtml(c.flag || '')} <b>${escapeHtml(c.name)}</b></span>${rentForm.mode === 'custom' ? `<input aria-label="Rent share for ${escapeHtml(c.name)}" type="number" step="0.01" style="width:110px;min-height:38px;padding:6px 10px;border:1px solid var(--line);border-radius:8px" value="${escapeHtml(val)}" oninput="rentForm.customAmounts['${escapeHtml(c.id)}'] = this.value; rentForm.review = false;">` : `<b class="money">${cents(eq, rentForm.currency, true)}</b>`}</div>`;
       }).join('')}` : ''}
       <label class="row" style="cursor:pointer;margin-top:8px"><span style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700"><input type="checkbox" ${rentForm.saveRule ? 'checked' : ''} onchange="rentForm.saveRule = this.checked" style="width:17px;height:17px">Save rule for future months</span></label>
       ${rentForm.error ? `<div class="callout error" role="alert">${svg('alert')}<span>${escapeHtml(rentForm.error)}</span></div>` : ''}
-      <div class="actions"><button type="button" class="btn btn-primary full" onclick="submitRentRequest()" ${rentForm.busy ? 'disabled' : ''}><span>Review &amp; create rent requests</span>${svg('arrow-right')}</button></div>
+      <div class="actions"><button type="button" class="btn btn-primary full" onclick="submitRentRequest()" ${rentForm.busy ? 'disabled' : ''}><span>${rentForm.review ? 'Confirm &amp; create rent requests' : 'Review rent requests'}</span>${svg('arrow-right')}</button></div>
     </div>`;
 }
 
 function toggleRentContact(id) {
+  rentForm.review = false;
   const i = rentForm.contactIds.indexOf(id);
   if (i >= 0) rentForm.contactIds.splice(i, 1); else rentForm.contactIds.push(id);
   render();
@@ -1960,22 +2224,41 @@ function toggleRentContact(id) {
 async function submitRentRequest() {
   const chosen = contactsList.filter(c => rentForm.contactIds.includes(c.id));
   const totalCents = Math.round((Number(rentForm.amountStr) || 0) * 100);
-  if (!chosen.length || totalCents <= 0) { rentForm.error = 'Select household contacts and enter a positive rent amount.'; render(); return; }
-  const per = Math.floor(totalCents / chosen.length);
-  const recipients = chosen.map((c, idx) => {
-    const shareCents = rentForm.mode === 'custom' ? Math.max(100, Math.round((Number(rentForm.customAmounts[c.id]) || 0) * 100)) : (idx === 0 ? totalCents - per * (chosen.length - 1) : per);
+  if (rentForm.busy) return;
+  if (!chosen.length || totalCents <= 0 || (rentForm.currency === 'JPY' && totalCents % 100) || !/^\d{4}-\d{2}-\d{2}$/.test(rentForm.dueDate)) {
+    rentForm.error = 'Select contacts, enter a positive rent amount, and choose a due date.'; render(); return;
+  }
+  const unit = rentForm.currency === 'JPY' ? 100 : 1;
+  const per = equalShare(totalCents, chosen.length, rentForm.currency);
+  const recipients = chosen.map(c => {
+    const equal = c.id === 'leah' ? totalCents - per * (chosen.length - 1) : per;
+    const shareCents = rentForm.mode === 'custom'
+      ? Math.round((Number(rentForm.customAmounts[c.id] ?? equal / 100) || 0) * 100)
+      : equal;
     return { name: c.name, contactId: c.id, amountCents: shareCents, currency: rentForm.currency, targetCurrency: c.currency || rentForm.currency, reason: `Rent (${rentForm.dueDate})` };
   });
-  rentForm.busy = true; rentForm.error = ''; render();
-  if (rentForm.saveRule) {
-    const rule = { contactIds: rentForm.contactIds, totalCents, currency: rentForm.currency, mode: rentForm.mode, customShares: rentForm.customAmounts };
-    savedRentRule = rule;
-    if (backendMode && ledger) { try { await api('/api/organizer/rent-rule', rule); } catch {} }
-    else saveLocalState();
+  if (recipients.some(r => r.amountCents <= 0 || r.amountCents % unit !== 0)
+    || recipients.reduce((sum, r) => sum + r.amountCents, 0) > totalCents) {
+    rentForm.error = 'Enter positive shares in the selected currency that do not exceed the rent total.'; render(); return;
   }
-  const created = await persistRequestRecord({ title: `Rent due ${rentForm.dueDate}`, merchant: 'Monthly Rent', dueDate: rentForm.dueDate, kind: 'rent', currency: rentForm.currency, totalCents: recipients.reduce((s, r) => s + r.amountCents, 0), recipients, channel: 'demo', demoAutoSettle: true });
+  if (!rentForm.review) {
+    rentForm.review = true; rentForm.error = ''; render(); return;
+  }
+  rentForm.busy = true; rentForm.error = ''; render();
+  const created = await persistRequestRecord({ title: `Rent due ${rentForm.dueDate}`, merchant: 'Monthly Rent', dueDate: rentForm.dueDate, kind: 'rent', currency: rentForm.currency, totalCents, recipients, channel: 'demo', demoAutoSettle: true, clientRequestId: rentForm.clientRequestId ||= `rent-${Date.now().toString(36)}` });
   rentForm.busy = false;
-  if (created) go(`request/${created.id}`);
+  if (!created) { render(); return; }
+  if (rentForm.saveRule) {
+    const rule = { contactIds: rentForm.contactIds, totalCents, currency: rentForm.currency, mode: rentForm.mode,
+      dayOfMonth: Number(rentForm.dueDate.slice(-2)),
+      customShares: rentForm.mode === 'custom' ? Object.fromEntries(recipients.map(r => [r.contactId, r.amountCents])) : {} };
+    savedRentRule = rule;
+    if (backendMode && ledger) {
+      try { await api('/api/organizer/rent-rule', rule); }
+      catch { toast('Requests created, but the rent rule could not be saved.'); }
+    } else saveLocalState();
+  }
+  go(`request/${created.id}`);
 }
 
 // ---------- Scan & Pay (Merchant QR + PayPal Sandbox Orders v2 SS-001) ----------
@@ -1983,24 +2266,25 @@ function openScanPay() {
   stopStreams();
   scannerState = 'ready';
   scannerMessage = '';
+  pastedLinkDraft = '';
   go('scan');
 }
 
 function scanQrScreen() {
   let camera = '';
-  if (scannerState === 'denied') camera = `<div class="center"><div class="result-icon cancelled">${svg('qr')}</div><h2 style="color:#fff">Camera permission unavailable</h2><p style="color:#DCE1E8;margin-top:6px">Allow camera permission or paste a supported SplitSync link below.</p></div>`;
-  else if (scannerState === 'unavailable') camera = `<div class="center"><div class="result-icon processing">${svg('alert')}</div><h2 style="color:#fff">Camera unavailable</h2><p style="color:#DCE1E8;margin-top:6px">Paste a supported SplitSync QR link below.</p></div>`;
+  if (scannerState === 'denied') camera = `<div class="center"><div class="result-icon cancelled">${svg('qr')}</div><h2 style="color:#fff">Camera permission unavailable</h2><p style="color:#DCE1E8;margin-top:6px">Allow camera permission or paste a supported payment link below.</p></div>`;
+  else if (scannerState === 'unavailable') camera = `<div class="center"><div class="result-icon processing">${svg('alert')}</div><h2 style="color:#fff">Camera unavailable</h2><p style="color:#DCE1E8;margin-top:6px">Paste a supported payment QR link below.</p></div>`;
   else if (scannerState === 'scanning') camera = `<span class="camera-badge">Live camera preview</span><video id="cam" autoplay playsinline muted></video>`;
   else camera = `<span class="camera-badge">Merchant QR scanner</span><div class="center"><div class="icon-box" style="width:54px;height:54px;margin:0 auto 10px">${svg('qr')}</div><h2 style="color:#fff">Ready to scan</h2><p style="color:#DCE1E8;margin-top:6px">Tap Open camera or paste a merchant code like <code>#purchase/SS-001</code>.</p></div>`;
 
-  return screenHeader('Scan & pay', 'Pay supported Demo Merchant Sandbox links', 'home')
+  return screenHeader('Scan & pay', 'Pay supported Sandbox Merchant Sandbox links', 'home')
     + `<div class="split-grid">
       <div class="camera-frame">${camera}</div>
       <div class="card">
         <h2>Scan or paste code</h2>
         <div class="actions">
           <button type="button" class="btn btn-primary" onclick="${scannerState === 'scanning' ? 'stopCamera()' : 'startCamera()'}">${svg('qr')}<span>${scannerState === 'scanning' ? 'Stop camera' : 'Open camera'}</span></button>
-          <button type="button" class="btn btn-secondary" onclick="openSs001DemoMerchant()">Open Demo Merchant (SS-001)</button>
+          <button type="button" class="btn btn-secondary" onclick="openSs001DemoMerchant()">Open Sandbox Merchant (SS-001)</button>
         </div>
         <div class="rule"></div>
         <form onsubmit="event.preventDefault(); pasteLink()">
@@ -2016,12 +2300,39 @@ function scanQrScreen() {
 }
 
 async function startCamera() {
+  const epoch = ++scanEpoch;
+  const current = () => epoch === scanEpoch && location.hash === '#scan';
   scannerState = 'scanning'; scannerMessage = ''; render();
   try {
     if (!navigator.mediaDevices?.getUserMedia) throw Object.assign(new Error('No camera'), { name: 'NotFoundError' });
-    activeStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-    const v = document.querySelector('#cam'); if (v) v.srcObject = activeStream;
+    if (!globalThis.BarcodeDetector) {
+      scannerState = 'unavailable';
+      scannerMessage = 'QR scanning is unavailable in this browser. Paste a supported link or code below.';
+      render();
+      return;
+    }
+    const detector = new BarcodeDetector({ formats: ['qr_code'] });
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    if (!current()) { stream.getTracks().forEach(track => track.stop()); return; }
+    activeStream = stream;
+    async function readFrame() {
+      if (!current()) return;
+      const video = document.querySelector('#cam');
+      if (video && video.srcObject !== stream) video.srcObject = stream;
+      try {
+        const codes = video?.readyState >= 2 ? await detector.detect(video) : [];
+        if (!current()) return;
+        if (codes[0]?.rawValue) {
+          stopStreams();
+          openMerchantCode(codes[0].rawValue);
+          return;
+        }
+      } catch { /* Frames can become invalid when the camera rotates. */ }
+      setTimeout(readFrame, 180);
+    }
+    readFrame();
   } catch (e) {
+    if (!current()) return;
     const denied = e?.name === 'NotAllowedError' || e?.name === 'PermissionDeniedError';
     scannerState = denied ? 'denied' : 'unavailable';
     scannerMessage = denied ? 'Camera permission denied. Paste #purchase/SS-001 instead.' : 'Camera unavailable in this browser. Paste #purchase/SS-001 instead.';
@@ -2035,16 +2346,18 @@ function openSs001DemoMerchant() {
   go('review');
 }
 function pasteLink() {
-  const raw = (document.querySelector('#purchase-link')?.value || '').trim();
+  openMerchantCode(document.querySelector('#purchase-link')?.value || '');
+}
+function openMerchantCode(value) {
+  const raw = value.trim();
   pastedLinkDraft = raw;
-  if (!raw) { scannerState = 'invalid'; scannerMessage = 'Paste a SplitSync link or merchant code first.'; render(); return; }
-  const reqM = raw.match(/#req\/([A-Za-z0-9-]+)/);
-  if (reqM) { scannerState = 'ready'; location.hash = `#req/${reqM[1]}`; return; }
-  const payM = raw.match(/#pay\/([a-f0-9]+)/);
-  if (payM) { scannerState = 'ready'; location.hash = `#pay/${payM[1]}`; return; }
-  if (raw === 'SS-001' || raw.includes('#purchase/SS-001')) { scannerState = 'ready'; openSs001DemoMerchant(); return; }
+  const fragment = raw.startsWith('#') ? raw : raw.match(/^https?:\/\/[^#]+(#[^#]+)$/i)?.[1];
+  if (fragment && /^#(?:req|pay)\/[A-Za-z0-9-]+$/.test(fragment)) {
+    scannerState = 'ready'; location.hash = fragment; return;
+  }
+  if (raw === 'SS-001' || fragment === '#purchase/SS-001') { scannerState = 'ready'; openSs001DemoMerchant(); return; }
   scannerState = 'invalid';
-  scannerMessage = `Unsupported code "${raw}". Supported: Demo Merchant #purchase/SS-001 or a SplitSync link.`;
+  scannerMessage = raw ? 'Unsupported code. Use the Sandbox Merchant #purchase/SS-001 or a PayPal Hackathon payment link.' : 'Scan a QR or paste a link first.';
   render();
 }
 
@@ -2052,7 +2365,7 @@ function pasteLink() {
 function receiptCard() {
   const activeLamp = draftLamp || ledger?.lamp || lamp;
   return `<div class="card">
-    <div class="section-title"><h2>Demo Merchant · SS-001</h2>${badge('Sandbox', '')}</div>
+    <div class="section-title"><h2>Sandbox Merchant · SS-001</h2>${badge('Sandbox', '')}</div>
     <div class="row"><span>Shared kitchen essentials (3 ways)</span><b class="money">$120.00</b></div>
     <div class="row"><span>Desk lamp (${escapeHtml(activeLamp)})</span><b class="money">$30.00</b></div>
     <div class="row total"><span>Total</span><span class="money">$150.00 USD</span></div>
@@ -2062,7 +2375,7 @@ function reviewScreen() {
   ss001Active = true;
   const cur = activeSsShares();
   const activeLamp = draftLamp || ledger?.lamp || lamp;
-  return screenHeader('Review merchant purchase', 'Demo Merchant · SS-001 · PayPal Sandbox checkout', 'scan', badge('Sandbox', ''))
+  return screenHeader('Review merchant purchase', 'Sandbox Merchant · SS-001 · PayPal Sandbox checkout', 'scan', badge('Sandbox', ''))
     + `<div class="split-grid">
       ${receiptCard()}
       <div class="card">
@@ -2120,7 +2433,7 @@ function requestsScreen(qrName) {
 }
 function dashboardScreen() {
   const paid = names.filter(n => ssStatus(n) === 'Paid').reduce((s, n) => s + activeSsShares()[n], 0);
-  return screenHeader('SS-001 Sandbox ledger', 'Demo Merchant · PayPal Orders v2', 'activity', badge('Sandbox', ''))
+  return screenHeader('SS-001 Sandbox ledger', 'Sandbox Merchant · PayPal Orders v2', 'activity', badge('Sandbox', ''))
     + `<div class="split-grid">${receiptCard()}<div class="card"><div style="font-size:26px;font-weight:800" class="money">${money(paid)} / $150.00 USD</div><div class="rule"></div>${names.map(n => `<div class="row"><b>${n}</b><span>${money(activeSsShares()[n])} ${pill(ssStatus(n))}</span></div>`).join('')}<div class="actions"><button type="button" class="btn btn-primary full" onclick="go('requests')">Share PayPal links</button></div></div></div>`;
 }
 
@@ -2136,7 +2449,7 @@ function storeScreen() {
   const prods = storeCategory !== 'Retailers' ? storeCatalog.filter(p => (storeCategory === 'All' || p.category === storeCategory) && (!q || `${p.name} ${p.seller}`.toLowerCase().includes(q))) : [];
   const retailers = ['All', 'Retailers'].includes(storeCategory) ? externalRetailers.filter(r => !q || r.name.toLowerCase().includes(q)) : [];
   return `<div class="hub-top">
-    <div><h1>splitStore ${badge('Sample · Demo mode', 'preview')}</h1><p class="screen-sub">Sample household catalog with shared cart &amp; optional split.</p></div>
+    <div><h1>splitStore ${badge('Sample · Practice mode', 'preview')}</h1><p class="screen-sub">Sample household catalog with shared cart &amp; optional split.</p></div>
     <button type="button" class="btn btn-primary" onclick="go('cart')">${svg('cart')}<span>Cart (${cartCount()})</span></button>
   </div>
   <div class="store-toolbar"><div class="store-search">${svg('search')}<input id="store-search" type="search" aria-label="Search store" value="${escapeHtml(storeQuery)}" oninput="storeQuery = this.value; render()" placeholder="Search lamps, cookware, retailers…"></div></div>
@@ -2149,7 +2462,7 @@ function storeScreen() {
 function productDetailScreen(id) {
   const p = storeCatalog.find(x => x.id === id) || storeCatalog[0];
   return screenHeader(escapeHtml(p.name), `${escapeHtml(p.seller)} · ${escapeHtml(p.category)}`, 'store', `<button type="button" class="btn-ghost-sm" onclick="go('cart')">${svg('cart')}<span>Cart (${cartCount()})</span></button>`)
-    + `<div class="split-grid"><div class="card"><div class="product-art" style="height:220px">${svg(p.art)}</div></div><div class="card">${badge('Sample item · Demo mode', 'preview')}<h2 class="money" style="margin-top:10px;font-size:26px">${cents(p.priceCents)} USD</h2><p style="margin-top:8px">${escapeHtml(p.desc)}</p><div class="actions"><button type="button" class="btn btn-primary full" onclick="addToCart('${escapeHtml(p.id)}', true)">${svg('cart')}<span>Add to shared cart</span></button></div></div></div>`;
+    + `<div class="split-grid"><div class="card"><div class="product-art" style="height:220px">${svg(p.art)}</div></div><div class="card">${badge('Sample item · Practice mode', 'preview')}<h2 class="money" style="margin-top:10px;font-size:26px">${cents(p.priceCents)} USD</h2><p style="margin-top:8px">${escapeHtml(p.desc)}</p><div class="actions"><button type="button" class="btn btn-primary full" onclick="addToCart('${escapeHtml(p.id)}', true)">${svg('cart')}<span>Add to shared cart</span></button></div></div></div>`;
 }
 function addToCart(id, openCart = false) {
   const ex = sharedCart.find(i => i.id === id); if (ex) ex.qty += 1; else sharedCart.push({ id, qty: 1 });
@@ -2167,16 +2480,16 @@ function clearCart() { sharedCart = []; localStorage.setItem('splitsync-cart', '
 function splitCartWithPeople() {
   const rows = sharedCart.map(c => ({ ...c, product: storeCatalog.find(p => p.id === c.id) })).filter(c => c.product);
   const total = rows.reduce((s, r) => s + r.product.priceCents * r.qty, 0);
-  const per = Math.floor(total / 3);
+  const per = equalShare(total, 3, 'USD');
   chatAttachedBill = { merchant: 'splitStore Shared Cart', date: '2026-11-10', currency: 'USD', items: rows.map(r => ({ name: `${r.product.name} x${r.qty}`, amountCents: r.product.priceCents * r.qty })), taxCents: 0, tipCents: 0, totalCents: total };
   chatDraft = {
     intent: 'request',
     needsClarification: false,
     modelUsed: 'Store Cart',
     recipients: [
-      { id: 'draft-1', name: 'Maya', contactId: 'maya', known: true, ambiguous: false, amountCents: total - per * 2, currency: 'USD', targetCurrency: 'USD', reason: rows[0]?.product?.name || 'Store purchase' },
+      { id: 'draft-1', name: 'Maya', contactId: 'maya', known: true, ambiguous: false, amountCents: per, currency: 'USD', targetCurrency: 'USD', reason: rows[0]?.product?.name || 'Store purchase' },
       { id: 'draft-2', name: 'Arun', contactId: 'arun', known: true, ambiguous: false, amountCents: per, currency: 'USD', targetCurrency: 'CAD', reason: rows[0]?.product?.name || 'Store purchase' },
-      { id: 'draft-3', name: 'Leah', contactId: 'leah', known: true, ambiguous: false, amountCents: per, currency: 'USD', targetCurrency: 'USD', reason: rows[0]?.product?.name || 'Store purchase' },
+      { id: 'draft-3', name: 'Leah', contactId: 'leah', known: true, ambiguous: false, amountCents: total - per * 2, currency: 'USD', targetCurrency: 'USD', reason: rows[0]?.product?.name || 'Store purchase' },
     ],
   };
   chatHistory = [{ id: 'a-cart', role: 'assistant', text: `Prepared ${cents(total)} USD shared cart split across Maya, Arun, and Leah. Ready to create requests?`, modelUsed: 'Store Cart' }];
@@ -2185,22 +2498,21 @@ function splitCartWithPeople() {
 
 // ---------- Profile & Presenter Reset ----------
 function profileScreen() {
-  return `<div class="hub-top"><div><h1>Profile</h1><p class="screen-sub">Connection status, international contacts, and presenter controls.</p></div>${badge(backendMode && ledger ? 'Connected Sandbox' : 'Demo mode', backendMode && ledger ? '' : 'preview')}</div>
+  return `<div class="hub-top"><div><h1>Profile</h1><p class="screen-sub">Connection status, international contacts, and presenter controls.</p></div>${badge(backendMode && ledger ? 'Connected Sandbox' : 'Practice mode', backendMode && ledger ? '' : 'preview')}</div>
   <div class="split-grid">
     <section class="card">
       <h2>Workspace &amp; voice</h2>
       <div class="row"><span>Backend connection</span><b>${backendMode && ledger ? 'Connected' : 'Offline preview'}</b></div>
       <div class="row"><span>Auto-play Chatterbox voice</span><button type="button" class="btn-ghost-sm" onclick="toggleAskVoice()">${askVoiceOn ? 'ON' : 'OFF'}</button></div>
-      <div class="row"><span>AI Extract &amp; Split (NVIDIA)</span>${pill(providers.aiConfigured ? 'Sent' : 'Created')}</div>
-      <div class="row"><span>PayPal Sandbox (SS-001)</span>${pill(providers.paypalConfigured ? 'Paid' : 'Created')}</div>
+      <div class="row"><span>AI Extract &amp; Split (NVIDIA)</span><b>${providers.aiConfigured ? 'Configured' : 'Unavailable'}</b></div>
+      <div class="row"><span>PayPal Sandbox (SS-001)</span><b>${providers.paypalConfigured ? 'Configured' : 'Unavailable'}</b></div>
       <div class="actions">
         ${backendMode && ledger ? `<button type="button" class="btn btn-secondary" onclick="signOutOrganizer()">Disconnect</button>` : `<button type="button" class="btn btn-primary" onclick="go('welcome')">Connect backend</button>`}
-        <button type="button" class="btn btn-secondary" onclick="resetDemoSession()">${svg('refresh')}<span>Reset demo session</span></button>
       </div>
     </section>
     <section class="card">
       <h2>International contacts (${contactsList.length})</h2>
-      ${contactsList.map(c => `<div class="row"><span class="person">${escapeHtml(c.flag || c.name[0])}</span><div class="grow"><b>${escapeHtml(c.name)}</b><br><small class="sub">${escapeHtml(c.country || '')} · ${escapeHtml(c.note || '')}</small></div><b>${escapeHtml(c.currency || 'USD')}</b></div>`).join('')}
+      ${contactsList.map(c => `<div class="row profile-contact"><span class="person">${escapeHtml(c.flag || c.name[0])}</span><div class="grow"><b>${escapeHtml(c.name)}</b><br><small class="sub">${escapeHtml(c.country || '')} · ${escapeHtml(c.note || '')}</small></div><b>${escapeHtml(c.currency || 'USD')}</b></div>`).join('')}
     </section>
   </div>`;
 }
@@ -2215,14 +2527,15 @@ function buyerPage(shareData, query) {
   return `<div class="hub-top"><div><h1>Your share · ${amount} USD</h1><p class="screen-sub">Hi ${escapeHtml(shareData.name)}, ${escapeHtml(shareData.merchant)} (${escapeHtml(shareData.purchaseTitle)}).</p></div>${badge('Sandbox')}</div>
   <div class="split-grid">
     <div class="card"><div class="section-title"><h2>Your items</h2>${badge('Private link')}</div><div class="row"><span>Shared essentials</span><b>$40.00</b></div>${ownsLamp ? `<div class="row"><span>Desk lamp</span><b>$30.00</b></div>` : ''}<div class="row total"><span>Total</span><span>${amount} USD</span></div></div>
-    <div class="card card-tint payment-summary${paid || pending || cancelled ? ' is-priority' : ''}"><div class="section-title"><h2>Payment</h2>${pill(cancelled ? 'Cancelled' : shareData.status)}</div><div class="row"><span>Total</span><b class="money">${amount} USD</b></div>${!paid && !pending ? `<div class="actions"><button type="button" class="btn btn-paypal full" id="pay-button" onclick="startCheckout()">${cancelled ? 'Retry with PayPal' : 'Pay with PayPal'}</button></div>` : ''}<div class="actions"><button type="button" class="btn btn-secondary full" onclick="refreshBuyer()">Refresh payment status</button></div><p id="payment-message" role="status" class="sub" style="color:var(--error);margin-top:8px"></p></div>
+    <div class="card card-tint payment-summary${paid || pending || cancelled ? ' is-priority' : ''}"><div class="section-title"><h2>Payment</h2>${pill(cancelled ? 'Cancelled' : shareData.status)}</div><div class="row"><span>Total</span><b class="money">${amount} USD</b></div>${!paid && !pending ? `<div class="actions"><button type="button" class="btn btn-paypal full" id="pay-button" onclick="startCheckout()"><img class="checkout-icon" src="assets/paypal.png" alt="">${cancelled ? 'Retry with PayPal' : 'Pay with PayPal'}</button></div>` : ''}<div class="actions"><button type="button" class="btn btn-secondary full" onclick="refreshBuyer()">Refresh payment status</button></div><p id="payment-message" role="status" class="sub" style="color:var(--error);margin-top:8px"></p></div>
   </div>`;
 }
 function reimbursementBuyerPage(data) {
-  return `<div class="hub-top"><div><h1>Request · ${cents(data.amountCents, data.currency, true)}</h1><p class="screen-sub">Hi ${escapeHtml(data.recipientName)}, from Leah for ${escapeHtml(data.reason)}.</p></div>${badge('Personal link', 'preview')}</div>
+  const status = data.demo && data.status === 'Paid' ? 'Payment received' : data.status;
+  return `<div class="hub-top"><div><h1>Request · ${cents(data.amountCents, data.currency, true)}</h1><p class="screen-sub">Hi ${escapeHtml(data.recipientName)}, from Leah for ${escapeHtml(data.reason)}.</p></div>${badge(data.demo ? 'Practice mode' : 'Personal link', 'preview')}</div>
   <div class="split-grid">
     <div class="card"><h2>${escapeHtml(data.merchant)}</h2>${data.evidenceImageDataUrl ? `<img src="${escapeHtml(data.evidenceImageDataUrl)}" alt="Receipt" class="crop-canvas" style="margin:10px 0">` : ''}${(data.items || []).map(i => `<div class="row"><span>${escapeHtml(i.name)}</span><b>${cents(i.amountCents, data.currency)}</b></div>`).join('')}<div class="row total"><span>Bill total</span><span>${cents(data.totalBillCents || data.totalCents, data.currency, true)}</span></div></div>
-    <div class="card card-tint"><div class="section-title"><h2>Your portion</h2>${pill(data.status)}</div><div class="row"><span>Amount</span><b class="money">${cents(data.amountCents, data.currency, true)}</b></div><div class="row"><span>Reason</span><b>${escapeHtml(data.reason)}</b></div><div class="callout">${svg('alert')}<span>${escapeHtml(data.note)}</span></div></div>
+    <div class="card card-tint"><div class="section-title"><h2>Your portion</h2>${pill(status)}</div><div class="row"><span>Amount</span><b class="money">${cents(data.amountCents, data.currency, true)}</b></div><div class="row"><span>Reason</span><b>${escapeHtml(data.reason)}</b></div><div class="callout">${svg('alert')}<span>${escapeHtml(data.demo ? 'Practice request with simulated settlement. No money moves.' : data.note)}</span></div></div>
   </div>`;
 }
 
@@ -2276,7 +2589,7 @@ async function renderReimbursementBuyer() {
   if (token.startsWith('demo-')) {
     const req = reimbursementsList.find(r => r.recipients.some(x => x.shareToken === token));
     const rec = req?.recipients?.find(x => x.shareToken === token);
-    if (req && rec && appEl) { appEl.innerHTML = reimbursementBuyerPage({ ...req, totalBillCents: req.totalCents, recipientName: rec.name, amountCents: rec.amountCents, reason: rec.reason, status: rec.status, note: 'Personal reimbursement link.' }); return; }
+    if (req && rec && appEl) { appEl.innerHTML = reimbursementBuyerPage({ ...req, totalBillCents: req.totalCents, recipientName: rec.name, amountCents: rec.amountCents, currency: rec.currency || req.currency, reason: rec.reason, status: rec.status, note: 'Personal reimbursement link.' }); return; }
   }
   try {
     const data = await api('/api/reimbursements/' + encodeURIComponent(token));
@@ -2294,6 +2607,7 @@ async function startCheckout() {
 async function refreshBuyer() { try { buyer = await api('/api/shares/' + buyerToken + '/refresh', {}); await renderBuyer(); } catch {} }
 
 let autoCamTriggeredRoute = '';
+let lastRenderedRoute = '';
 async function render() {
   if (location.hash.startsWith('#pay/')) return renderBuyer();
   if (location.hash.startsWith('#req/')) return renderReimbursementBuyer();
@@ -2304,9 +2618,17 @@ async function render() {
 
   if (route === 'dev-reset') { await resetDemoSession(); return; }
   if (backendMode && !ledger && !staticPreviewMode && !['welcome', 'share', 'handoff', 'result'].includes(route)) {
-    try { await loadWorkspaceState(); } catch { setChromeMode('welcome'); const el = document.querySelector('#app'); if (el) el.innerHTML = authView(); return; }
+    try { await loadWorkspaceState(); } catch { staticPreviewMode = true; }
   }
-  if (route === 'welcome' || (!ledger && !staticPreviewMode && !['share', 'handoff', 'result'].includes(route))) {
+  if (route === 'welcome' && backendMode && providers.localOrganizerAutoLogin) {
+    try {
+      if (!ledger) await loadWorkspaceState();
+      staticPreviewMode = false;
+      go('home');
+      return;
+    } catch {}
+  }
+  if (route === 'welcome') {
     setChromeMode('welcome'); const el = document.querySelector('#app'); if (el) el.innerHTML = authView(); return;
   }
 
@@ -2327,6 +2649,8 @@ async function render() {
     welcome: authView,
     send: () => { if (a && transferForm.contactId !== a) selectSendContact(a); return sendMoneyScreen(); },
     'review-transfer': reviewTransferScreen,
+    'review-payment-draft': groupPaymentReviewScreen,
+    'payment-draft-receipt': groupPaymentReceiptScreen,
     tx: () => txReceiptScreen(a || activeTxReceiptId),
     'request-new': manualRequestScreen,
     request: () => requestDetailScreen(a),
@@ -2350,8 +2674,19 @@ async function render() {
   };
 
   const appEl = document.querySelector('#app');
+  const routeKey = location.hash || '#home';
+  const sameRoute = routeKey === lastRenderedRoute;
+  const focused = sameRoute && appEl?.contains?.(document.activeElement) ? document.activeElement : null;
+  const fieldId = focused?.id;
+  const selection = typeof focused?.selectionStart === 'number' ? [focused.selectionStart, focused.selectionEnd] : null;
   if (appEl) appEl.innerHTML = (views[route] || homeScreen)();
-  window.scrollTo(0, 0);
+  if (!sameRoute) window.scrollTo(0, 0);
+  if (fieldId) {
+    const replacement = document.getElementById(fieldId);
+    replacement?.focus({ preventScroll: true });
+    if (selection) replacement?.setSelectionRange?.(...selection);
+  }
+  lastRenderedRoute = routeKey;
 
   if (route === 'scan-bill' && autoCamTriggeredRoute !== 'scan-bill' && !billRawImage && !billDraft && billCameraState === 'ready') {
     autoCamTriggeredRoute = 'scan-bill';
@@ -2391,4 +2726,7 @@ function createSampleReceiptDataUrl() {
 }
 
 window.addEventListener('hashchange', render);
+window.addEventListener('focus', () => {
+  if (backendMode && ledger) loadWorkspaceState().then(render).catch(() => {});
+});
 detectBackend().then(render);

@@ -1,6 +1,6 @@
-# SplitSync AI Design System
+# PayPal Hackathon Design System
 
-Visual design system for the **SplitSync AI** web app (`website/dist/`) and Flutter app (`flutter_app/`), translated from the Medfarm reference architecture while preserving SplitSync's household expense-splitting identity and server-enforced PayPal Sandbox security boundaries.
+Visual design system for the **PayPal Hackathon** web app (`website/dist/`) and Flutter app (`flutter_app/`), translated from the Medfarm reference architecture while preserving SplitSync's household expense-splitting identity and server-enforced PayPal Sandbox security boundaries.
 
 ## 1. Color Tokens
 

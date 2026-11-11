@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 
 /// Medfarm-inspired color palette translated for SplitSync AI.
 abstract final class SplitColors {
-  static const primary = Color(0xFF0F67FE);
+  static const primary = Color(0xFF1457D9);
   static const primaryInk = Color(0xFF0A4EC4);
   static const primaryBorder = Color.fromRGBO(15, 103, 254, 0.20);
-  static const navy = Color(0xFF242E49);
+  static const navy = Color(0xFF172846);
   static const navyDeep = Color(0xFF182035);
   static const teal = Color(0xFF48B3A9);
   static const tealInk = Color(0xFF136B63);
@@ -15,11 +15,11 @@ abstract final class SplitColors {
   static const errorBg = Color(0xFFFFF2F4);
   static const amber = Color(0xFF9E6200);
   static const amberBg = Color(0xFFFFF4DE);
-  static const bg = Color(0xFFF2F5F9);
+  static const bg = Color(0xFFF1F5FC);
   static const surface = Colors.white;
   static const surfaceTint = Color(0xFFEDF5FF);
   static const surfaceSubtle = Color(0xFFFAFAFA);
-  static const muted = Color(0xFF5D6A85);
+  static const muted = Color(0xFF4C5C77);
   static const line = Color(0xFFDCE1E8);
   static const borderStrong = Color(0xFF9EA7B8);
   static const paypalBg = Color(0xFFFFC439);
@@ -51,35 +51,66 @@ ThemeData buildSplitSyncTheme({Brightness brightness = Brightness.light}) {
     textTheme: TextTheme(
       headlineMedium: TextStyle(
         fontFamily: 'PlusJakartaSans',
-        fontSize: 26,
+        fontSize: 32,
         fontWeight: FontWeight.w800,
         color: headingColor,
         letterSpacing: -0.7,
         height: 1.2,
       ),
+      headlineSmall: TextStyle(
+        fontSize: 25,
+        fontWeight: FontWeight.w800,
+        color: headingColor,
+        letterSpacing: -0.5,
+        height: 1.2,
+      ),
       titleLarge: TextStyle(
         fontFamily: 'PlusJakartaSans',
-        fontSize: 19,
+        fontSize: 22,
         fontWeight: FontWeight.w800,
         color: headingColor,
         letterSpacing: -0.3,
       ),
       titleMedium: TextStyle(
         fontFamily: 'PlusJakartaSans',
-        fontSize: 16,
+        fontSize: 17,
         fontWeight: FontWeight.w700,
         color: headingColor,
       ),
+      bodyLarge: TextStyle(fontSize: 17, color: bodyColor, height: 1.5),
+      bodySmall: TextStyle(fontSize: 14, color: bodyColor, height: 1.45),
       bodyMedium: TextStyle(
         fontFamily: 'PlusJakartaSans',
-        fontSize: 14,
+        fontSize: 16,
         color: bodyColor,
         height: 1.5,
       ),
       labelLarge: const TextStyle(
         fontFamily: 'PlusJakartaSans',
-        fontSize: 14,
+        fontSize: 16,
         fontWeight: FontWeight.w700,
+      ),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: cardBg,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: SplitColors.borderStrong),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: SplitColors.primary, width: 2),
+      ),
+    ),
+    navigationBarTheme: NavigationBarThemeData(
+      labelTextStyle: WidgetStatePropertyAll(
+        TextStyle(
+          fontSize: 14,
+          fontWeight: FontWeight.w700,
+          color: headingColor,
+        ),
       ),
     ),
     appBarTheme: AppBarTheme(
@@ -120,12 +151,12 @@ class SplitPrimaryButton extends StatelessWidget {
       style: FilledButton.styleFrom(
         backgroundColor: bg,
         foregroundColor: fg,
-        minimumSize: const Size(48, 48),
+        minimumSize: const Size(48, 52),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         textStyle: const TextStyle(
           fontFamily: 'PlusJakartaSans',
-          fontSize: 14,
+          fontSize: 16,
           fontWeight: FontWeight.w800,
         ),
       ),
@@ -175,7 +206,7 @@ class SplitSecondaryButton extends StatelessWidget {
       style: OutlinedButton.styleFrom(
         backgroundColor: isDark ? SplitColors.darkSurface : Colors.white,
         foregroundColor: textColor ?? SplitColors.primaryInk,
-        minimumSize: const Size(48, 48),
+        minimumSize: const Size(48, 52),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         side: BorderSide(
           color: borderColor ?? const Color(0xFFBDD4FE),
@@ -184,7 +215,7 @@ class SplitSecondaryButton extends StatelessWidget {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         textStyle: const TextStyle(
           fontFamily: 'PlusJakartaSans',
-          fontSize: 14,
+          fontSize: 16,
           fontWeight: FontWeight.w700,
         ),
       ),
@@ -251,6 +282,7 @@ class SplitTextField extends StatefulWidget {
   final VoidCallback? onToggleObscure;
   final int maxLines;
   final bool hasError;
+  final TextInputType? keyboardType;
   final TextInputAction? textInputAction;
   final ValueChanged<String>? onSubmitted;
   final ValueChanged<String>? onChanged;
@@ -265,6 +297,7 @@ class SplitTextField extends StatefulWidget {
     this.onToggleObscure,
     this.maxLines = 1,
     this.hasError = false,
+    this.keyboardType,
     this.textInputAction,
     this.onSubmitted,
     this.onChanged,
@@ -301,7 +334,9 @@ class _SplitTextFieldState extends State<SplitTextField> {
     final fillColor = isDark ? SplitColors.darkSurface : Colors.white;
     final haloColor = widget.hasError
         ? const Color.fromRGBO(176, 0, 32, 0.16)
-        : (_focusNode.hasFocus ? SplitColors.primaryBorder : Colors.transparent);
+        : (_focusNode.hasFocus
+              ? SplitColors.primaryBorder
+              : Colors.transparent);
     final activeBorderColor = widget.hasError
         ? SplitColors.error
         : (_focusNode.hasFocus ? SplitColors.primary : SplitColors.line);
@@ -329,6 +364,7 @@ class _SplitTextFieldState extends State<SplitTextField> {
             controller: widget.controller,
             obscureText: widget.obscureText,
             maxLines: widget.obscureText ? 1 : widget.maxLines,
+            keyboardType: widget.keyboardType,
             textInputAction: widget.textInputAction,
             onSubmitted: widget.onSubmitted,
             onChanged: widget.onChanged,
@@ -421,7 +457,7 @@ class SplitStepHeader extends StatelessWidget {
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
       style: const TextStyle(
-        fontSize: 12,
+        fontSize: 14,
         fontWeight: FontWeight.w800,
         color: SplitColors.muted,
       ),
@@ -440,11 +476,7 @@ class SplitStepHeader extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
-                    children: [
-                      labelText,
-                      const SizedBox(height: 6),
-                      bar,
-                    ],
+                    children: [labelText, const SizedBox(height: 6), bar],
                   ),
                 ),
               ],
@@ -485,7 +517,8 @@ class SplitCard extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: Material(
-        color: color ?? (isDark ? SplitColors.darkSurface : SplitColors.surface),
+        color:
+            color ?? (isDark ? SplitColors.darkSurface : SplitColors.surface),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
           side: BorderSide(color: borderColor ?? SplitColors.line),
@@ -520,18 +553,18 @@ class SplitBadge extends StatelessWidget {
     final bg = navy
         ? Colors.white.withValues(alpha: 0.14)
         : preview
-            ? const Color(0xFFEEF2F7)
-            : SplitColors.surfaceTint;
+        ? const Color(0xFFEEF2F7)
+        : SplitColors.surfaceTint;
     final fg = navy
         ? Colors.white
         : preview
-            ? SplitColors.navy
-            : SplitColors.primaryInk;
+        ? SplitColors.navy
+        : SplitColors.primaryInk;
     final border = navy
         ? Colors.white.withValues(alpha: 0.24)
         : preview
-            ? SplitColors.line
-            : const Color(0xFFD3E4FF);
+        ? SplitColors.line
+        : const Color(0xFFD3E4FF);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
@@ -541,11 +574,7 @@ class SplitBadge extends StatelessWidget {
       ),
       child: Text(
         text,
-        style: TextStyle(
-          color: fg,
-          fontSize: 11,
-          fontWeight: FontWeight.w800,
-        ),
+        style: TextStyle(color: fg, fontSize: 13, fontWeight: FontWeight.w800),
       ),
     );
   }
@@ -562,7 +591,9 @@ class SplitStatusPill extends StatelessWidget {
       'Paid' || 'Reviewed' => (SplitColors.tealBg, SplitColors.tealInk),
       'Sent' => (SplitColors.surfaceTint, SplitColors.primaryInk),
       'Processing' => (SplitColors.amberBg, SplitColors.amber),
-      'Cancelled' || 'Error' || 'Failed' => (SplitColors.errorBg, SplitColors.error),
+      'Cancelled' ||
+      'Error' ||
+      'Failed' => (SplitColors.errorBg, SplitColors.error),
       _ => (const Color(0xFFEEF2F7), const Color(0xFF4A5670)),
     };
     return Container(
@@ -573,11 +604,7 @@ class SplitStatusPill extends StatelessWidget {
       ),
       child: Text(
         status,
-        style: TextStyle(
-          color: fg,
-          fontSize: 11,
-          fontWeight: FontWeight.w800,
-        ),
+        style: TextStyle(color: fg, fontSize: 13, fontWeight: FontWeight.w800),
       ),
     );
   }
@@ -662,21 +689,14 @@ class SplitCallout extends StatelessWidget {
                     ],
                     Text(
                       message,
-                      style: TextStyle(
-                        color: fg,
-                        fontSize: 13,
-                        height: 1.45,
-                      ),
+                      style: TextStyle(color: fg, fontSize: 15, height: 1.45),
                     ),
                   ],
                 ),
               ),
             ],
           ),
-          if (trailing != null) ...[
-            const SizedBox(height: 10),
-            trailing!,
-          ],
+          if (trailing != null) ...[const SizedBox(height: 10), trailing!],
         ],
       ),
     );
@@ -719,10 +739,7 @@ class SplitScreenHeader extends StatelessWidget {
               ],
             ),
           ),
-          if (trailing != null) ...[
-            const SizedBox(width: 10),
-            trailing!,
-          ],
+          if (trailing != null) ...[const SizedBox(width: 10), trailing!],
         ],
       ),
     );
