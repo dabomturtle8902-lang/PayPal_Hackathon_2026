@@ -295,6 +295,11 @@ const run = async s => vm.runInContext(s, ctx);
   assert.equal(await run('transferForm.sourceCurrency'), 'CAD');
   assert.equal(await run('transferForm.amountStr'), '45.00');
 
+  // Ask AI needs-fix draft card adapts in both explicit and OS dark themes
+  const css = fs.readFileSync(path.join(__dirname, '../dist/style.css'), 'utf8');
+  assert(css.includes('--warn-card-bg: #FFFBF2;') && css.includes('background: var(--warn-card-bg);'), 'Light theme needs-fix card must use --warn-card-bg');
+  assert.equal((css.match(/--warn-card-bg:\s*#241D13;/g) || []).length, 2, 'Dark theme rules (explicit + prefers-color-scheme) must override --warn-card-bg');
+
   // Presenter reset clears demo state cleanly
   await run('resetDemoSession()');
   assert.equal(await run('demoTransactions.length'), 0);

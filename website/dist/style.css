@@ -31,6 +31,8 @@
   --error-bg: #FFF2F4;
   --amber: #9E6200;
   --amber-bg: #FFF4DE;
+  --warn-card-bg: #FFFBF2;
+  --warn-card-border: #F4DA9C;
   --bg: #F1F5FC;
   --surface: #FFFFFF;
   --surface-tint: #EDF5FF;
@@ -1288,8 +1290,8 @@ p {
 }
 
 .draft-row-card.needs-fix {
-  border-color: #F4DA9C;
-  background: #FFFBF2;
+  border-color: var(--warn-card-border);
+  background: var(--warn-card-bg);
 }
 
 .draft-grid {
@@ -2231,7 +2233,12 @@ body.focused .sticky-buy-bar { left: 0; }
   box-shadow: 0 1px 4px rgba(9, 14, 29, 0.14);
 }
 
+html[data-theme="light"] {
+  color-scheme: light;
+}
+
 html[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #090E1D;
   --surface: #141B31;
   --surface-tint: #1B2746;
@@ -2246,12 +2253,15 @@ html[data-theme="dark"] {
   --teal-ink: #7CE0D7;
   --amber-bg: #2B2214;
   --amber: #F6C667;
+  --warn-card-bg: #241D13;
+  --warn-card-border: #7D5A1C;
   --error-bg: #361722;
   --error: #FF7B8A;
 }
 
 @media (prefers-color-scheme: dark) {
   html:not([data-theme="light"]) {
+    color-scheme: dark;
     --bg: #090E1D;
     --surface: #141B31;
     --surface-tint: #1B2746;
@@ -2266,6 +2276,8 @@ html[data-theme="dark"] {
     --teal-ink: #7CE0D7;
     --amber-bg: #2B2214;
     --amber: #F6C667;
+    --warn-card-bg: #241D13;
+    --warn-card-border: #7D5A1C;
     --error-bg: #361722;
     --error: #FF7B8A;
   }
@@ -2291,6 +2303,7 @@ html[data-theme="dark"] .chat-bubble.assistant p { color: #FFFFFF !important; }
 html[data-theme="dark"] .step-fill { background: #0F67FE; }
 html[data-theme="dark"] .card-tint,
 html[data-theme="dark"] .fx-box,
+html[data-theme="dark"] .mic-panel,
 html[data-theme="dark"] .callout,
 html[data-theme="dark"] .ask-compact-bar,
 html[data-theme="dark"] .badge { border-color: #3D4966; }
@@ -2345,6 +2358,7 @@ html[data-theme="dark"] .product-detail-media {
   html:not([data-theme="light"]) .step-fill { background: #0F67FE; }
   html:not([data-theme="light"]) .card-tint,
   html:not([data-theme="light"]) .fx-box,
+  html:not([data-theme="light"]) .mic-panel,
   html:not([data-theme="light"]) .callout,
   html:not([data-theme="light"]) .ask-compact-bar,
   html:not([data-theme="light"]) .badge { border-color: #3D4966; }
