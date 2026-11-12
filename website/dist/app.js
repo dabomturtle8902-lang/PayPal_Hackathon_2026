@@ -595,6 +595,17 @@ async function api(path, body, timeoutMs = 28000, signal = undefined) {
   return data;
 }
 
+async function extractReceipt(imageDataUrl) {
+  try {
+    return await api('/api/organizer/extract-bill', { imageDataUrl });
+  } catch (error) {
+    if ([0, 401, 403, 404, 405, 503].includes(error.status)) {
+      throw new Error('Automatic receipt scanning is unavailable.');
+    }
+    throw error;
+  }
+}
+
 // ---------- Navigation & Stream Lifecycle ----------
 function stopStreams() {
   scanEpoch++;
@@ -2317,8 +2328,7 @@ async function extractAskAttachedBill(sample = false) {
     chatExtractState = 'ready'; render(); return;
   }
   try {
-    if (!ledger) throw new Error('Connect in Profile to extract receipt text, or enter fields manually.');
-    chatAttachedBill = await api('/api/organizer/extract-bill', { imageDataUrl: chatAttachedImg });
+    chatAttachedBill = await extractReceipt(chatAttachedImg);
     chatExtractState = 'ready'; render();
   } catch (e) {
     chatExtractState = 'error'; chatExtractError = e.message;
@@ -2727,7 +2737,7 @@ function scanBillScreen() {
         <h2>Extracted details</h2>
         ${billExtractState === 'idle' && !billDraft ? `<p class="sub" style="margin-top:8px">Capture or upload a receipt photo (or tap <b>Use sample receipt</b>) to extract editable fields.</p>` : ''}
         ${billExtractState === 'loading' ? `<div class="callout">${svg('sparkles')}<span>Extracting merchant, date, items, and total…</span></div><div class="skeleton" style="margin-top:10px;width:85%"></div><div class="skeleton" style="width:65%"></div>` : ''}
-        ${billExtractState === 'error' ? `<div class="callout warning" role="alert">${svg('alert')}<span>${escapeHtml(billExtractError)} Edit fields below manually.</span></div>` : ''}
+        ${billExtractState === 'error' ? `<div class="callout warning" role="alert">${svg('alert')}<span>${escapeHtml(billExtractError)} Enter the receipt details below.</span></div>` : ''}
         ${billDraft && billExtractState !== 'loading' ? renderStandaloneBillEditor() : ''}
       </div>
     </div>`;
@@ -2824,7 +2834,7 @@ async function extractStandaloneBill(sample = false) {
     billDraft = { merchant: 'Olive Kitchen', date: '2026-11-10', currency: 'USD', items: [{ name: 'Pasta Dinner Bowl', amountCents: 2000 }, { name: 'Craft Drinks (2)', amountCents: 1500 }, { name: 'Shared Herb Flatbread', amountCents: 700 }], taxCents: 0, tipCents: 0, totalCents: 4200, unreadableFields: [], totalMismatch: false };
     billExtractState = 'ready'; render(); return;
   }
-  try { if (!ledger) throw new Error('Connect in Profile to extract receipt text, or edit manually.'); billDraft = await api('/api/organizer/extract-bill', { imageDataUrl: billCroppedImage }); billExtractState = 'ready'; render(); }
+  try { billDraft = await extractReceipt(billCroppedImage); billExtractState = 'ready'; render(); }
   catch (e) { billExtractState = 'error'; billExtractError = e.message; billDraft = { merchant: '', date: '', currency: 'USD', items: [{ name: '', amountCents: 0 }], taxCents: 0, tipCents: 0, totalCents: 0 }; render(); }
 }
 
