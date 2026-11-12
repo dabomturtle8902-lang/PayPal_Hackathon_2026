@@ -1,17 +1,262 @@
 import {execFile} from 'node:child_process';
 import {existsSync} from 'node:fs';
 import {mkdtemp, rm, writeFile} from 'node:fs/promises';
+import http2 from 'node:http2';
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {promisify} from 'node:util';
+import {gunzipSync} from 'node:zlib';
 import {convertAmountCents, formatMoney, fxQuote, normalizeCurrency} from './store.mjs';
 
 const run = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
-const speechScript = fileURLToPath(new URL('./chatterbox.py', import.meta.url));
 const transcribeScript = fileURLToPath(new URL('./transcribe.py', import.meta.url));
 const unavailable = (status, message) => Object.assign(new Error(message), {status});
+const RIVA_TTS_URL = 'https://grpc.nvcf.nvidia.com:443';
+const RIVA_TTS_METHOD = '/nvidia.riva.tts.RivaSpeechSynthesis/Synthesize';
+const CHATTERBOX_FUNCTION_ID = 'ddacc747-1269-4fab-bfd9-8f593dead106';
+const CHATTERBOX_VOICE = 'Chatterbox-Multilingual.en-US.Male';
+const CHATTERBOX_LANGUAGE = 'en-US';
+const CHATTERBOX_SAMPLE_RATE = 22050;
+const LINEAR_PCM_ENCODING = 1;
+
+function encodeVarint(value) {
+  const bytes = [];
+  let v = value >>> 0;
+  while (v >= 0x80) {
+    bytes.push((v & 0x7f) | 0x80);
+    v >>>= 7;
+  }
+  bytes.push(v);
+  return Buffer.from(bytes);
+}
+
+function encodeStringField(fieldNumber, text) {
+  if (!text) return Buffer.alloc(0);
+  const data = Buffer.from(String(text), 'utf8');
+  return Buffer.concat([encodeVarint((fieldNumber << 3) | 2), encodeVarint(data.length), data]);
+}
+
+function encodeVarintField(fieldNumber, value) {
+  if (!value) return Buffer.alloc(0);
+  return Buffer.concat([encodeVarint((fieldNumber << 3) | 0), encodeVarint(value)]);
+}
+
+export function encodeSynthesizeRequest({
+  text,
+  languageCode = CHATTERBOX_LANGUAGE,
+  encoding = LINEAR_PCM_ENCODING,
+  sampleRateHz = CHATTERBOX_SAMPLE_RATE,
+  voiceName = CHATTERBOX_VOICE,
+}) {
+  return Buffer.concat([
+    encodeStringField(1, text),
+    encodeStringField(2, languageCode),
+    encodeVarintField(3, encoding),
+    encodeVarintField(4, sampleRateHz),
+    encodeStringField(5, voiceName),
+  ]);
+}
+
+function readVarint(buf, offset) {
+  let result = 0n;
+  let shift = 0n;
+  let pos = offset;
+  while (pos < buf.length) {
+    const byte = buf[pos++];
+    result |= BigInt(byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) return {value: result, nextOffset: pos};
+    shift += 7n;
+    if (shift > 63n) throw new Error('Malformed protobuf varint');
+  }
+  throw new Error('Truncated protobuf varint');
+}
+
+export function decodeSynthesizeResponse(buf) {
+  const audioChunks = [];
+  let offset = 0;
+  while (offset < buf.length) {
+    const tag = readVarint(buf, offset);
+    offset = tag.nextOffset;
+    const fieldNumber = Number(tag.value >> 3n);
+    const wireType = Number(tag.value & 7n);
+    if (wireType === 0) {
+      offset = readVarint(buf, offset).nextOffset;
+    } else if (wireType === 1) {
+      offset += 8;
+    } else if (wireType === 2) {
+      const len = readVarint(buf, offset);
+      const size = Number(len.value);
+      const end = len.nextOffset + size;
+      if (end > buf.length) throw new Error('Truncated protobuf field');
+      if (fieldNumber === 1) audioChunks.push(buf.subarray(len.nextOffset, end));
+      offset = end;
+    } else if (wireType === 5) {
+      offset += 4;
+    } else {
+      throw new Error(`Unsupported protobuf wire type ${wireType}`);
+    }
+    if (offset > buf.length) throw new Error('Truncated protobuf message');
+  }
+  return Buffer.concat(audioChunks);
+}
+
+export function pcmToWav(pcm, sampleRate = CHATTERBOX_SAMPLE_RATE, channels = 1, bitsPerSample = 16) {
+  const header = Buffer.allocUnsafe(44);
+  const byteRate = sampleRate * channels * (bitsPerSample / 8);
+  const blockAlign = channels * (bitsPerSample / 8);
+  header.write('RIFF', 0, 4, 'ascii');
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write('WAVE', 8, 4, 'ascii');
+  header.write('fmt ', 12, 4, 'ascii');
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36, 4, 'ascii');
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
+function callRivaTts({
+  text,
+  key,
+  url = process.env.NVIDIA_TTS_URL || RIVA_TTS_URL,
+  functionId = CHATTERBOX_FUNCTION_ID,
+  voiceName = CHATTERBOX_VOICE,
+  languageCode = CHATTERBOX_LANGUAGE,
+  sampleRateHz = CHATTERBOX_SAMPLE_RATE,
+  timeoutMs = Number(process.env.CHATTERBOX_TIMEOUT_MS || 22000),
+  connectOptions,
+}) {
+  const payload = encodeSynthesizeRequest({text, languageCode, encoding: LINEAR_PCM_ENCODING, sampleRateHz, voiceName});
+  const frame = Buffer.allocUnsafe(5 + payload.length);
+  frame[0] = 0;
+  frame.writeUInt32BE(payload.length, 1);
+  payload.copy(frame, 5);
+
+  return new Promise((resolvePromise, rejectPromise) => {
+    let settled = false;
+    let client;
+    let req;
+    const chunks = [];
+    let httpStatus = 0;
+    let grpcEncoding = '';
+    let headerGrpcStatus;
+    let headerGrpcMessage = '';
+    let trailerGrpcStatus;
+    let trailerGrpcMessage = '';
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      try { req?.close(); } catch {}
+      try { client?.close(); } catch {}
+    };
+    const succeed = value => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolvePromise(value);
+    };
+    const fail = err => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      rejectPromise(err instanceof Error ? err : new Error(String(err)));
+    };
+
+    const timer = setTimeout(() => fail(new Error(`gRPC request timed out after ${timeoutMs}ms`)), timeoutMs);
+
+    try {
+      client = http2.connect(url, connectOptions);
+    } catch (err) {
+      fail(err);
+      return;
+    }
+
+    client.on('error', fail);
+
+    req = client.request({
+      ':method': 'POST',
+      ':path': RIVA_TTS_METHOD,
+      'content-type': 'application/grpc',
+      te: 'trailers',
+      'grpc-accept-encoding': 'identity,gzip',
+      'function-id': functionId,
+      authorization: `Bearer ${key}`,
+    });
+
+    req.on('response', headers => {
+      httpStatus = Number(headers[':status'] || 0);
+      grpcEncoding = String(headers['grpc-encoding'] || '');
+      if (headers['grpc-status'] !== undefined) headerGrpcStatus = String(headers['grpc-status']);
+      if (headers['grpc-message'] !== undefined) headerGrpcMessage = String(headers['grpc-message']);
+    });
+
+    req.on('data', chunk => {
+      chunks.push(chunk);
+    });
+
+    req.on('trailers', trailers => {
+      if (trailers['grpc-status'] !== undefined) trailerGrpcStatus = String(trailers['grpc-status']);
+      if (trailers['grpc-message'] !== undefined) trailerGrpcMessage = String(trailers['grpc-message']);
+    });
+
+    req.on('error', fail);
+
+    req.on('end', () => {
+      try {
+        const grpcStatus = trailerGrpcStatus ?? headerGrpcStatus;
+        const rawGrpcMessage = trailerGrpcMessage || headerGrpcMessage;
+        let grpcMessage = rawGrpcMessage;
+        try {
+          grpcMessage = decodeURIComponent(rawGrpcMessage);
+        } catch {}
+
+        if (httpStatus && httpStatus !== 200) {
+          throw new Error(`HTTP ${httpStatus}${grpcMessage ? `: ${grpcMessage}` : ''}`);
+        }
+        if (grpcStatus !== undefined && grpcStatus !== '0') {
+          throw new Error(`gRPC status ${grpcStatus}${grpcMessage ? `: ${grpcMessage}` : ''}`);
+        }
+
+        const body = Buffer.concat(chunks);
+        const pcmParts = [];
+        let offset = 0;
+        while (offset + 5 <= body.length) {
+          const compressed = body[offset];
+          const frameLength = body.readUInt32BE(offset + 1);
+          const end = offset + 5 + frameLength;
+          if (end > body.length) throw new Error('Truncated gRPC response frame');
+          let message = body.subarray(offset + 5, end);
+          if (compressed === 1) {
+            if (!/gzip/i.test(grpcEncoding)) {
+              throw new Error(`Unsupported gRPC compression: ${grpcEncoding || 'unknown'}`);
+            }
+            message = gunzipSync(message);
+          } else if (compressed !== 0) {
+            throw new Error(`Unexpected gRPC compression flag: ${compressed}`);
+          }
+          const pcm = decodeSynthesizeResponse(message);
+          if (pcm.length) pcmParts.push(pcm);
+          offset = end;
+        }
+        if (offset !== body.length) throw new Error('Incomplete gRPC response frame');
+        const fullPcm = Buffer.concat(pcmParts);
+        if (!fullPcm.length) throw new Error('Empty audio');
+        succeed(pcmToWav(fullPcm, sampleRateHz));
+      } catch (err) {
+        fail(err);
+      }
+    });
+
+    req.end(frame);
+  });
+}
 
 export const DEEPSEEK_MODEL = 'deepseek-ai/deepseek-v4.1-flash';
 export const FALLBACK_TEXT_MODEL = 'nvidia/nemotron-3.5-lightning-30b-a3b';
@@ -226,7 +471,7 @@ export function normalizeParsedRequest(raw, contacts = [], bill = null, rates) {
   };
 }
 
-export function createNvidia({key, python, fetchImpl = fetch} = {}) {
+export function createNvidia({key, python, fetchImpl = fetch, ttsUrl, ttsConnectOptions} = {}) {
   const py = resolvePython(python);
   const deepseekTimeoutMs = Number(process.env.DEEPSEEK_TIMEOUT_MS || 5500);
 
@@ -365,18 +610,23 @@ Return ONLY raw JSON: {"intent":"send"|"request","recipients":[{"name":string,"a
 
     async speak(text) {
       requireKey();
+      const cleanText = String(text || '').trim();
+      if (!cleanText) throw unavailable(400, 'Text is required for Chatterbox speech output.');
       try {
-        const {stdout} = await run(py, [speechScript, text], {
-          env: {...process.env, NVIDIA_API_KEY: key},
-          encoding: 'buffer',
-          timeout: 22000,
-          maxBuffer: 4 * 1024 * 1024,
-          windowsHide: true,
+        const wav = await callRivaTts({
+          text: cleanText,
+          key: key.trim(),
+          url: ttsUrl,
+          connectOptions: ttsConnectOptions,
         });
-        if (stdout.toString('ascii', 0, 4) !== 'RIFF' || stdout.length <= 44) throw new Error('Empty audio');
-        return stdout;
-      } catch {
-        throw unavailable(502, 'Chatterbox is unavailable. Check NVIDIA API access and the Python Riva client setup.');
+        if (wav.toString('ascii', 0, 4) !== 'RIFF' || wav.length <= 44) throw new Error('Empty audio');
+        return wav;
+      } catch (err) {
+        if (err?.status) throw err;
+        const safeKey = key.trim();
+        const rawDetail = String(err?.message || '').trim();
+        const detail = safeKey ? rawDetail.replaceAll(safeKey, '[redacted]') : rawDetail;
+        throw unavailable(502, detail ? `Chatterbox is unavailable (${detail}). Check NVIDIA API access.` : 'Chatterbox is unavailable. Check NVIDIA API access.');
       }
     },
 

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import http2 from 'node:http2';
 import {Readable} from 'node:stream';
 import {mkdtemp, rm, readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -7,7 +8,7 @@ import {join} from 'node:path';
 import {createApp} from '../app.mjs';
 import {Store, FX_RATES_USD, defaultContacts, formatMoney, fxQuote, createExchangeRateLoader, newState, normalizeState} from '../store.mjs';
 import {PayPal} from '../paypal.mjs';
-import {normalizeExtractedBill, normalizeParsedRequest} from '../nvidia.mjs';
+import {createNvidia, decodeSynthesizeResponse, encodeSynthesizeRequest, normalizeExtractedBill, normalizeParsedRequest} from '../nvidia.mjs';
 const organizerToken='organizer-test-key-abcdefghijklmnopqrstuvwxyz';
 const baseUrl='http://localhost:3000';
 function fakePayPal(){
@@ -530,5 +531,83 @@ test('Vercel serverless entrypoint uses ORGANIZER_TOKEN env and handles rewritte
       else process.env[k] = v;
     }
     await rm(dir, {recursive: true, force: true});
+  }
+});
+
+test('Chatterbox TTS uses native Node HTTP/2 gRPC without Python and produces valid RIFF/WAV output', async () => {
+  const encoded = encodeSynthesizeRequest({text: 'Hello'});
+  assert.equal(
+    encoded.toString('hex'),
+    '0a0548656c6c6f1205656e2d5553180120a2ac012a2243686174746572626f782d4d756c74696c696e6775616c2e656e2d55532e4d616c65',
+  );
+
+  const samplePcm = Buffer.from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+  // Protobuf SynthesizeSpeechResponse: field 1 (audio) + field 2 (meta submessage skipped)
+  const pbResp = Buffer.concat([
+    Buffer.from([0x0a, samplePcm.length]),
+    samplePcm,
+    Buffer.from([0x12, 0x02, 0x08, 0x01]),
+  ]);
+  assert.deepEqual(decodeSynthesizeResponse(pbResp), samplePcm);
+
+  let mode = 'ok';
+  let capturedHeaders = null;
+  let capturedBody = null;
+  const server = http2.createServer();
+  server.on('stream', (stream, headers) => {
+    capturedHeaders = headers;
+    const chunks = [];
+    stream.on('data', c => chunks.push(c));
+    stream.on('end', () => {
+      capturedBody = Buffer.concat(chunks);
+      if (mode === 'error') {
+        stream.respond({':status': 200, 'content-type': 'application/grpc'}, {waitForTrailers: true});
+        stream.on('wantTrailers', () => {
+          stream.sendTrailers({'grpc-status': '7', 'grpc-message': encodeURIComponent('Permission denied nvapi-secret-key')});
+        });
+        stream.end();
+        return;
+      }
+      const frame = Buffer.allocUnsafe(5 + pbResp.length);
+      frame[0] = 0;
+      frame.writeUInt32BE(pbResp.length, 1);
+      pbResp.copy(frame, 5);
+      stream.respond({':status': 200, 'content-type': 'application/grpc'}, {waitForTrailers: true});
+      stream.on('wantTrailers', () => {
+        stream.sendTrailers({'grpc-status': '0'});
+      });
+      stream.end(frame);
+    });
+  });
+
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const port = server.address().port;
+    const nvidia = createNvidia({key: 'nvapi-secret-key', ttsUrl: `http://127.0.0.1:${port}`});
+    const wav = await nvidia.speak('Hello');
+    assert.equal(capturedHeaders[':path'], '/nvidia.riva.tts.RivaSpeechSynthesis/Synthesize');
+    assert.equal(capturedHeaders['function-id'], 'ddacc747-1269-4fab-bfd9-8f593dead106');
+    assert.equal(capturedHeaders.authorization, 'Bearer nvapi-secret-key');
+    assert.equal(capturedBody[0], 0);
+    assert.equal(capturedBody.readUInt32BE(1), encoded.length);
+    assert.deepEqual(capturedBody.subarray(5), encoded);
+
+    assert.equal(wav.toString('ascii', 0, 4), 'RIFF');
+    assert.equal(wav.toString('ascii', 8, 12), 'WAVE');
+    assert.equal(wav.readUInt32LE(24), 22050);
+    assert.deepEqual(wav.subarray(44), samplePcm);
+
+    mode = 'error';
+    await assert.rejects(
+      () => nvidia.speak('Hello'),
+      err => {
+        assert.equal(err.status, 502);
+        assert.match(err.message, /gRPC status 7: Permission denied/);
+        assert(!err.message.includes('nvapi-secret-key'));
+        return true;
+      },
+    );
+  } finally {
+    await new Promise(resolve => server.close(resolve));
   }
 });
