@@ -1,82 +1,67 @@
 # PayPal AI Hackathon
 
-**SplitSync AI** — Multi-currency wallet, AI-assisted group bill splitting, receipt OCR, household recurring bills, and PayPal Sandbox merchant checkout, built across a responsive **Vanilla JS Web App** (`website/dist/`), a **Flutter App** (`flutter_app/`), and a **Node.js Backend** (`server/`).
+**PayPal AI Hackathon** is an AI-powered shared payments, bill splitting, and multi-currency wallet application. Users can scan receipts, split household or group expenses in natural language, send international transfers with two-way currency conversion, and complete per-person checkouts through PayPal Sandbox.
 
-[![Full Showcase Video](https://img.shields.io/badge/Demo_Showcase-1080p_60fps_H.264-0070ba)](demos/splitsync-full-showcase.mp4)
-[![Quick Walkthrough Video](https://img.shields.io/badge/Quick_Walkthrough-60fps_18.6s-0070ba)](previews/splitsync-demo.mp4)
-[![Web Suite](https://img.shields.io/badge/Web_Tests-node_website%2Ftest%2Fdemo.cjs-16a34a)](#testing--verification)
-[![Server Tests](https://img.shields.io/badge/Server_Tests-25%2F25_Passing-16a34a)](#testing--verification)
-[![Flutter Tests](https://img.shields.io/badge/Flutter_Tests-15%2F15_Passing-16a34a)](#testing--verification)
+**Live Web App:** [paypal-hackathon-2026-git-main-dabomturtle8902-lang.vercel.app](https://paypal-hackathon-2026-git-main-dabomturtle8902-lang.vercel.app)
 
 ---
 
 ## Demo Videos
 
-### 1. Full 7-Act Product Showcase (`1080p · 60 fps · 2m 27s`)
+### Full Product Showcase (`1080p · 60 fps`)
 
-Click the animated preview below to open the full 1080p 60 fps showcase video ([`demos/splitsync-full-showcase.mp4`](demos/splitsync-full-showcase.mp4)):
+[![PayPal AI Hackathon — Full Product Showcase](previews/splitsync-showcase.gif)](demos/splitsync-full-showcase.mp4)
 
-[![PayPal AI Hackathon — 7-Act Product Showcase](previews/splitsync-showcase.gif)](demos/splitsync-full-showcase.mp4)
+> Click the preview above to watch [`demos/splitsync-full-showcase.mp4`](demos/splitsync-full-showcase.mp4) — end-to-end walkthrough across Desktop, Tablet, and Mobile covering PIN login, multi-currency transfers, Store checkout, Ask AI chat, receipt OCR, household bills, and PayPal Sandbox payments.
 
-> **Video specs:** `1920×1080` · `60 fps` · `H.264 (yuv420p)` · `146.97s` (`8,818` frames) · `18.9 MB` · [Watch / Download MP4](demos/splitsync-full-showcase.mp4)
-> Recorded deterministically across live **Desktop (`1440×900`) -> Tablet (`1024×768`) -> Phone (`390×844`)** bezel morphs via [`scripts/record-splitsync-showcase.mjs`](scripts/record-splitsync-showcase.mjs) (Playwright + Chrome DevTools Protocol `Emulation.setDeviceMetricsOverride` + FFmpeg).
+### Quick Walkthrough (`18.6s Highlight`)
 
-<details>
-<summary><strong>7-Act Showcase Breakdown (Click to expand)</strong></summary>
+[![PayPal AI Hackathon — Quick Walkthrough](previews/splitsync-demo.gif)](previews/splitsync-demo.mp4)
 
-1. **Act 1 — Authentication & Core Home Shell (`Desktop 1440×900 · .nav-rail`):** PIN lock (`"Welcome, Leah"` / `1234`) with Show/Hide toggle and Phone Authenticator unlock, organizer connection state (`#welcome`), PayPal Wallet (`$245.00 USD`) + Three.js 3D card deck (`cards3d.js`) + `+ Recharge` modal, Quick Contacts, Bento Store showcase, and `leah@paypal` Receive QR.
-2. **Act 2 — Bidirectional International FX & Transfers (`Desktop 1440×900`):** Currency-only recipient cards (`Allen · GBP`, `Maya · USD`, `Arun · CAD`, `Sofia · EUR`, `Yuki · JPY`), `You send` vs `Recipient receives` toggle with integer `JPY` formatting and live `INR` estimates, funding source selection (`PayPal Wallet` vs `PayPal Cashback •••• 9104`), and `#tx/:id` receipt.
-3. **Act 3 — Store, Cart, Checkout & "Split Cash" AI Handoff (`Tablet 1024×768 · Adaptive`):** `11`-item household catalog with category chips (`All`, `Kitchen`, `Lighting`, `Electronics`), product detail (`#product/:id`) quantity stepper & sandbox badge, `#cart`, `#checkout-review`, and Store Receipt **Split cash** handoff straight into Ask AI.
-4. **Act 4 — Multimodal Ask AI, Voice TTS & Group Payment Drafts (`Tablet 1024×768`):** `#ask` (`#fab-ask-ai`) with `Voice ON/OFF` Chatterbox TTS toggle, multi-recipient batch split prompt (`"Give Maya $24 and Arun $18"`), ambiguous contact clarification, `#review-payment-draft`, and `#payment-draft-receipt`.
-5. **Act 5 — Receipt Scanning & Household Bills (`Phone 390×844 · .bottom-nav`):** Responsive bottom navigation, `#scan-bill` (`Olive Kitchen` OCR sample receipt, editable line items, mismatch warning), `#request/:id` progress & staggered arrival notifications, and `#electricity` / `#rent` Equal vs Custom shares with `Save rule for future months`.
-6. **Act 6 — PayPal Sandbox Merchant Flow (`SS-001`) & Isolated Payer Views (`Phone 390×844`):** `#scan` QR scanner -> `#purchase/SS-001` -> `#review` -> `#split` (`$150.00 USD`: `$120` shared essentials + `$30` desk lamp owner chip), `#requests`, `#qr/:name`, `#pay/:token` (`Pay with PayPal` Orders v2 Sandbox), and `#dashboard`.
-7. **Act 7 — Unified Activity Ledger, Theme Switcher & Dev Tools (`Desktop 1440×900`):** `#activity` (`#payment-cycle-card` 7D/30D inflow/outflow wave + `All` / `Awaiting payment` / `Payment received` / `Sent` / `Sandbox` filters), `#profile` (Medfarm `System / Light / Dark` theme switcher, backend/Chatterbox/Sandbox status, enlarged `leah@paypal` QR), and `#dev` controls.
-
-</details>
-
-### 2. Quick Feature Walkthrough (`1620×1072 · 60 fps · 18.6s`)
-
-Click the animated preview below to open the fast highlight recording ([`previews/splitsync-demo.mp4`](previews/splitsync-demo.mp4)):
-
-[![PayPal AI Hackathon — Quick Feature Walkthrough](previews/splitsync-demo.gif)](previews/splitsync-demo.mp4)
-
-> **Video specs:** `1620×1072` · `60 fps` · `H.264` · `18.63s` (`1,118` frames) · `4.98 MB` · [Watch / Download MP4](previews/splitsync-demo.mp4)
-> Covers PIN lock (`1234`), Home Hub with 3D card shuffle, bidirectional GBP/USD Demo FX (`Allen receives GBP` -> `$12.52 USD` receipt), and an Ask AI multi-person dinner split (`"Give Maya $24 and Arun $18 for dinner"`).
+> Click above to watch [`previews/splitsync-demo.mp4`](previews/splitsync-demo.mp4) — fast highlight reel covering the 3D wallet cards, international GBP/USD conversion, and Ask AI group splitting.
 
 ---
 
-## Multi-Device Screenshots
+## Key Features
 
-### Screen Studio Showcase Captures (Latest Web Flow)
+### 1. Ask AI Chat & Voice Assistant
+- **Natural-language money flows:** Type or dictate instructions (for example, sending money, ordering items from the Store, or splitting expenses across several friends at once).
+- **Smart contact resolution:** When a name isn't recognized in your contacts, interactive confirmation cards let you pick the intended recipient, edit amounts and reasons inline, or tap saved contacts in one click.
+- **Receipt-aware chat & voice replies:** Attach receipt images inside chat and listen to spoken confirmations synthesized with NVIDIA Chatterbox TTS.
 
-| Desktop Activity Cycle (`1440×900`) | Desktop Profile, Theme & QR (`1440×900`) |
-| :---: | :---: |
-| ![Desktop Activity Cycle](previews/showcase-activity-cycle.png) | ![Desktop Profile and QR](previews/showcase-profile-qr.png) |
+### 2. AI Receipt Scanning (`Scan a Bill`)
+- **Camera & image upload:** Capture a receipt live or upload PNG, JPEG, or WebP photos (automatically optimized before upload).
+- **Structured extraction:** Extracts merchant name, date, currency, line items, and totals via multimodal vision AI, highlights unreadable fields or sum mismatches, and prepares split requests immediately.
 
-| Phone Receipt Split (`390×844`) | Phone Household Bills (`390×844`) | Phone Payer Checkout (`390×844`) |
-| :---: | :---: | :---: |
-| ![Phone Receipt Split](previews/showcase-phone-receipt-split.png) | ![Phone Household Bills](previews/showcase-phone-household-bills.png) | ![Phone Payer Checkout](previews/showcase-phone-sandbox-payer.png) |
+### 3. Multi-Currency Wallet & International Transfers
+- **6 supported currencies:** `USD`, `GBP`, `CAD`, `EUR`, `JPY`, and `INR`, backed by live/cached ECB exchange rates.
+- **Two-way FX calculator:** Enter either the amount **you send** or the exact amount **your recipient receives**, with instant rate previews and clean currency formatting.
+- **Flexible funding & 3D wallet:** Pay from your rechargeable **PayPal Wallet** or linked card, paired with an interactive 3D card deck on the Home Hub.
 
-### Native Web & Flutter Viewport Captures
+### 4. Group Bill Splitting & PayPal Sandbox Checkout
+- **Equal or custom splits:** Divide restaurant bills, group purchases, electricity bills, and monthly rent equally or by per-person amounts, with optional saved rules for recurring monthly rent.
+- **Isolated share links & QR codes:** Generate unique payment links and scannable QR codes per friend, complete checkout via **PayPal Sandbox Orders v2**, and track payment statuses (`Waiting for payment`, `Sent`, `Paid`) in real time.
 
-| Desktop Home (`1440×900`) | Desktop Ask AI (`1440×900`) | Tablet Storefront Light (`1024×768`) |
-| :---: | :---: | :---: |
-| ![Desktop Home](previews/desktop-home.png) | ![Desktop Ask AI](previews/desktop-ask-ai.png) | ![Tablet Storefront](previews/tablet-store.png) |
-
-| Mobile PIN Login (`390×844`) | Mobile Send Money (`390×844`) | Flutter Home (`390×844`) |
-| :---: | :---: | :---: |
-| ![Mobile PIN Login](previews/mobile-pin-login.png) | ![Mobile Send Money](previews/mobile-send-money.png) | ![Flutter Home](previews/mobile-flutter-home.png) |
+### 5. AI Storefront & Activity Ledger
+- **Household Store & Wallet checkout:** Browse 11 household items with category filters, manage cart quantities, pay directly, and send completed orders straight into Ask AI splitting (**Split cash**).
+- **Activity & analytics:** View an inflow/outflow trend chart alongside filterable transaction history (`All`, `Awaiting payment`, `Payment received`, `Sent`, `Sandbox`).
+- **Adaptive multi-device UI:** Responsive sidebar navigation on desktop/tablet, thumb-friendly bottom navigation on mobile, PIN lock protection (`1234`), `System / Light / Dark` theme modes, and a companion **Flutter** app.
 
 ---
 
-## Core Features
+## Screenshots
 
-- **Medfarm Light & Dark Adaptive UI:** Responsive navigation rail on desktop/tablet (`.nav-rail`) transitioning seamlessly into a thumb-friendly mobile `.bottom-nav`, paired with `System / Light / Dark` theme switching and an interactive Three.js 3D PayPal card deck (`website/dist/cards3d.js`).
-- **Bidirectional FX & Cross-Border Transfers:** Switch freely between `You send` and `Recipient receives`, format integer `JPY` amounts cleanly, preview `Demo rate` + `INR` estimates, and choose between `PayPal Wallet` and `PayPal Cashback •••• 9104` at checkout.
-- **Ask AI Assistant & Voice TTS:** Parse natural-language split instructions (`"Give Maya $24 and Arun $18"`), disambiguate contacts interactively, confirm multi-recipient Group Payment Drafts, and toggle Chatterbox TTS audio playback (`server/chatterbox.py`).
-- **Receipt OCR & Household Bills:** Scan or load sample receipts with editable line items and mismatch detection (`#scan-bill`), plus recurring Electricity (`#electricity`) and Rent (`#rent`) workflows with Equal vs Custom share rules and `Save rule for future months`.
-- **Store Catalog & "Split Cash" Handoff:** Browse 11 household items with category filtering, adjust cart quantities, complete demo checkout, and send the receipt straight to `#ask` via **Split cash**.
-- **PayPal Sandbox Orders v2 Merchant Flow (`SS-001`):** Generate isolated per-participant payer checkout links (`#pay/:token`) backed by `server/paypal.mjs` with live collection progress tracking (`#dashboard`).
+| Desktop Home (`1440×900`) | Desktop Ask AI (`1440×900`) | Desktop Activity Cycle |
+| :---: | :---: | :---: |
+| ![Desktop Home](previews/desktop-home.png) | ![Desktop Ask AI](previews/desktop-ask-ai.png) | ![Desktop Activity Cycle](previews/showcase-activity-cycle.png) |
+
+| Tablet Storefront (`1024×768`) | Mobile PIN Login (`390×844`) | Mobile Send Money (`390×844`) |
+| :---: | :---: | :---: |
+| ![Tablet Storefront](previews/tablet-store.png) | ![Mobile PIN Login](previews/mobile-pin-login.png) | ![Mobile Send Money](previews/mobile-send-money.png) |
+
+| Phone Receipt Split | Phone Household Bills | Phone Payer Checkout | Flutter App (`390×844`) |
+| :---: | :---: | :---: | :---: |
+| ![Phone Receipt Split](previews/showcase-phone-receipt-split.png) | ![Phone Household Bills](previews/showcase-phone-household-bills.png) | ![Phone Payer Checkout](previews/showcase-phone-sandbox-payer.png) | ![Flutter Home](previews/mobile-flutter-home.png) |
 
 ---
 
@@ -84,44 +69,34 @@ Click the animated preview below to open the fast highlight recording ([`preview
 
 ```text
 PayPal_Hackathon_2026/
-├── website/
-│   ├── dist/                # Responsive Web App (index.html, app.js, cards3d.js, qrcode.js, style.css, three.module.min.js)
-│   └── test/demo.cjs        # VM UI route, FX, QR, and store verification suite
-├── server/
-│   ├── app.mjs              # Node.js 22+ HTTP API (no npm dependencies), static hosting, SSE events & purchase store
-│   ├── paypal.mjs           # PayPal Sandbox Orders v2 client & webhook verification
-│   ├── nvidia.mjs           # Multimodal AI receipt extraction & split parser
-│   ├── chatterbox.py        # Voice TTS synthesis helper
-│   ├── transcribe.py        # Speech transcription helper
-│   ├── README.md            # Sandbox credentials, organizer access, Flutter CORS, and webhooks guide
-│   └── test/                # Node native test runner suite (25 unit & integration tests)
-├── flutter_app/
-│   ├── lib/                 # Cross-platform Flutter UI, models, theme, widgets & speech helpers
-│   └── test/widget_test.dart # 15 Flutter widget & flow tests
-├── scripts/
-│   └── record-splitsync-showcase.mjs  # 7-Act Screen Studio Playwright + CDP + FFmpeg recorder
-├── demos/
-│   └── splitsync-full-showcase.mp4    # Full 1920×1080 60fps H.264 showcase video
-└── previews/                # Multi-device screenshots, GIF previews & splitsync-demo.mp4 walkthrough
+├── website/dist/          # Responsive Web App (HTML, CSS, Vanilla JS, Three.js 3D cards, QR generator)
+├── website/test/demo.cjs  # Automated web UI, FX, Ask AI, and Store verification script
+├── api/index.mjs          # Vercel serverless API entrypoint
+├── vercel.json            # Vercel static hosting and API route rewrites
+├── server/                # Zero-dependency Node.js 22+ API server, PayPal Sandbox client & NVIDIA AI/TTS integration
+│   └── test/              # Node test suite (28 unit & integration tests)
+├── flutter_app/           # Companion cross-platform Flutter application & widget tests
+├── demos/                 # Full 1080p showcase recording (splitsync-full-showcase.mp4)
+└── previews/              # Multi-device screenshots and animated GIF/MP4 previews
 ```
 
 ---
 
 ## Quick Start
 
-### 1. Run the Backend & Web App
+### 1. Run Locally (Web App + Node.js Backend)
 
-Requires **Node.js 22+** (no npm dependencies in `server/`). See [`server/README.md`](server/README.md) for PayPal Sandbox credentials, organizer access keys, and webhook setup.
+Requires **Node.js 22+**.
 
 ```bash
 cd server
-cp -n .env.example .env   # optional: configure PayPal Sandbox / NVIDIA / LOCAL_ORGANIZER_AUTO_LOGIN
+cp -n .env.example .env   # optional: add PayPal Sandbox & NVIDIA API keys
 npm start
 ```
 
-Open **`http://localhost:3000`** in your browser (`Profile → Connect backend` accepts the organizer key printed in the server terminal, or set `LOCAL_ORGANIZER_AUTO_LOGIN=true` in `server/.env` for automatic local demo access; default demo PIN is `1234`).
+Open **`http://localhost:3000`** in your browser (default demo PIN: **`1234`**). See [`server/README.md`](server/README.md) for PayPal Sandbox, webhook, and environment variable setup.
 
-### 2. Run the Flutter App
+### 2. Run the Companion Flutter App
 
 ```bash
 cd flutter_app
@@ -129,24 +104,13 @@ flutter pub get
 flutter run -d chrome --web-port=5173 --dart-define=PAYER_ORIGIN=http://localhost:3000
 ```
 
-### 3. Re-Record the 7-Act Product Demo Video
-
-Requires Node.js dependencies in `scripts/` (`Playwright`) and `ffmpeg`/`ffprobe` on `PATH`:
-
-```bash
-cd scripts && npm install && cd ..
-node scripts/record-splitsync-showcase.mjs
-# Fast choreography check (dry-run without video encode):
-node scripts/record-splitsync-showcase.mjs --dry-run
-```
-
 ---
 
-## Testing & Verification
+## Verification
 
-| Target | Command | Observed Result |
-| :--- | :--- | :--- |
-| **Web UI & Routes** | `node website/test/demo.cjs` | **PASS** (exit `0`) |
-| **Node Server** | `cd server && npm test` | **25 passed**, `0` failed |
-| **Flutter Analysis** | `cd flutter_app && flutter analyze` | **PASS** (no issues) |
-| **Flutter Tests** | `cd flutter_app && flutter test --no-pub` | **15 passed**, `0` failed |
+| Check | Command |
+| :--- | :--- |
+| **Web App Suite** | `node website/test/demo.cjs` |
+| **Backend Tests (`28` tests)** | `cd server && npm test` |
+| **Flutter Static Analysis** | `cd flutter_app && flutter analyze` |
+| **Flutter Widget Tests** | `cd flutter_app && flutter test --no-pub` |
