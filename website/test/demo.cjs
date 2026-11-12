@@ -4,6 +4,7 @@ const vm = require('vm');
 const assert = require('assert');
 
 const app = { innerHTML: '' };
+const fabEl = { hidden: true };
 const store = {};
 const bodyClassSet = new Set();
 const noopEl = { textContent: '', hidden: false, style: {}, dataset: {}, classList: { toggle() {} }, setAttribute() {} };
@@ -44,7 +45,7 @@ const ctx = {
     },
     createElement: () => ({}),
     getElementById: () => null,
-    querySelector: s => (s === '#app' ? app : (s === '#qr' || s === '#req-qr' ? null : noopEl)),
+    querySelector: s => (s === '#app' ? app : s === '#fab-ask-ai' ? fabEl : (s === '#qr' || s === '#req-qr' ? null : noopEl)),
     querySelectorAll: () => [],
   },
   window: {
@@ -75,6 +76,9 @@ const run = async s => vm.runInContext(s, ctx);
   assert(app.innerHTML.includes('Incorrect PIN. Hint: use 1234 or phone authenticator.'));
   await run('pinAppend("1"); pinAppend("2"); pinAppend("3"); pinAppend("4");');
   assert.equal(await run('appUnlocked'), true);
+  await run('render()');
+  assert.equal(bodyClassSet.has('welcome'), false, 'Home after PIN unlock without backend should enter static preview chrome');
+  assert.equal(fabEl.hidden, false, 'Ask AI floating button must be visible on Home after PIN unlock without backend');
   ctx.location.hash = '#profile';
   await run('render()');
   assert(app.innerHTML.includes('lock-wallet-btn'), 'Profile should include Lock wallet');

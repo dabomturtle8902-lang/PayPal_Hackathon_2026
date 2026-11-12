@@ -3646,8 +3646,13 @@ async function render() {
     if (el) el.innerHTML = medfarmLoginView();
     return;
   }
-  if (backendMode && !ledger && !staticPreviewMode && !['welcome', 'share', 'handoff', 'result'].includes(route)) {
-    try { await loadWorkspaceState(); } catch { staticPreviewMode = true; }
+  if (!ledger && !staticPreviewMode && !['welcome', 'share', 'handoff', 'result'].includes(route)) {
+    if (backendMode) {
+      try { await loadWorkspaceState(); } catch { staticPreviewMode = true; }
+    } else {
+      // Static deployments (e.g., Vercel) have no Node backend, so enter demo preview mode after PIN unlock.
+      staticPreviewMode = true;
+    }
   }
   if (route === 'welcome' && backendMode && providers.localOrganizerAutoLogin && !manualDisconnect) {
     try { if (!ledger) await loadWorkspaceState(); staticPreviewMode = false; go('home'); return; } catch {}
