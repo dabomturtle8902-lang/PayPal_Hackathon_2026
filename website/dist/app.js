@@ -595,12 +595,41 @@ async function api(path, body, timeoutMs = 28000, signal = undefined) {
   return data;
 }
 
+/** Downscales oversized receipt photos in the browser so uploads stay well below serverless body limits. */
+async function compressReceiptDataUrl(dataUrl, maxDim = 1600) {
+  if (typeof Image !== 'function' || typeof document?.createElement !== 'function') return dataUrl;
+  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/') || dataUrl.length <= 1200000) return dataUrl;
+  return await new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
+      const w = Math.max(1, Math.round((img.width || 1) * scale));
+      const h = Math.max(1, Math.round((img.height || 1) * scale));
+      const canvas = document.createElement('canvas');
+      if (!canvas?.getContext) { resolve(dataUrl); return; }
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
 async function extractReceipt(imageDataUrl) {
+  const prepared = await compressReceiptDataUrl(imageDataUrl);
   try {
-    return await api('/api/organizer/extract-bill', { imageDataUrl });
+    return await api('/api/organizer/extract-bill', { imageDataUrl: prepared }, 45000);
   } catch (error) {
-    if ([0, 401, 403, 404, 405, 503].includes(error.status)) {
-      throw new Error('Automatic receipt scanning is unavailable.');
+    if (error.status === 503) {
+      throw new Error('Automatic receipt scanning is unavailable: NVIDIA_API_KEY is not configured on the backend.');
+    }
+    if ([0, 404, 405].includes(error.status)) {
+      throw new Error('Automatic receipt scanning is unavailable (backend API route not reachable on this host).');
+    }
+    if ([401, 403].includes(error.status)) {
+      throw new Error(`Automatic receipt scanning is unavailable (${error.message || 'authorization failed'}).`);
     }
     throw error;
   }

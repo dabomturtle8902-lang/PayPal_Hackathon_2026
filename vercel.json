@@ -1,10 +1,20 @@
 {
+  "version": 2,
   "framework": null,
   "outputDirectory": "website/dist",
+  "functions": {
+    "api/index.mjs": {
+      "maxDuration": 60
+    }
+  },
   "rewrites": [
     {
+      "source": "/api/(.*)",
+      "destination": "/api/index?__route=/api/$1"
+    },
+    {
       "source": "/paypal/(.*)",
-      "destination": "/api/paypal/$1"
+      "destination": "/api/index?__route=/paypal/$1"
     }
   ]
 }

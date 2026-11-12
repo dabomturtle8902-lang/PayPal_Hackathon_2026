@@ -29,8 +29,10 @@ function defaultDelivery() {
   };
 }
 
-export function createApp({store, paypal, nvidia, delivery, organizerToken, baseUrl, flutterOrigin = '', localOrganizerAutoLogin = false, envOrganizerAutoLogin = false, loadRates = async () => ({rates: FX_RATES_USD, date: FX_REFERENCE_DATE}), staticDir}) {
+export function createApp({store, paypal, nvidia, delivery, organizerToken, baseUrl, flutterOrigin = '', localOrganizerAutoLogin = false, envOrganizerAutoLogin = false, allowedHosts = null, allowedOrigins = null, loadRates = async () => ({rates: FX_RATES_USD, date: FX_REFERENCE_DATE}), staticDir}) {
   const base = new URL(baseUrl);
+  const hostAllowlist = new Set((allowedHosts && allowedHosts.length ? allowedHosts : [base.host]).filter(Boolean));
+  const originAllowlist = new Set((allowedOrigins && allowedOrigins.length ? allowedOrigins : [base.origin, flutterOrigin]).filter(Boolean));
   const deliv = delivery || defaultDelivery();
   const participants = () => Object.values(store.state.participants);
   const sessionKey = createHmac('sha256', organizerToken).update('splitsync-session-v1').digest('hex');
@@ -77,7 +79,7 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
   });
 
   function sameOriginRequest(req) {
-    return (!req.headers.origin || [base.origin, flutterOrigin].filter(Boolean).includes(req.headers.origin))
+    return (!req.headers.origin || originAllowlist.has(req.headers.origin))
       && req.headers['sec-fetch-site'] !== 'cross-site';
   }
 
@@ -245,7 +247,7 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
       res.setHeader('Referrer-Policy', 'no-referrer');
       res.setHeader('X-Frame-Options', 'DENY');
       const url = new URL(req.url, base), path = url.pathname;
-      if (req.headers.host && req.headers.host !== base.host) fail(400, 'Use the configured PUBLIC_BASE_URL host.');
+      if (req.headers.host && !hostAllowlist.has(req.headers.host)) fail(400, 'Use the configured PUBLIC_BASE_URL host.');
       if (flutterOrigin && req.headers.origin === flutterOrigin) {
         res.setHeader('Access-Control-Allow-Origin', flutterOrigin);
         res.setHeader('Vary', 'Origin');
@@ -257,7 +259,7 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
         res.writeHead(204); res.end(); return;
       }
       if (req.method === 'POST' && path !== '/api/paypal/webhook') {
-        if (req.headers.origin && ![base.origin, flutterOrigin].filter(Boolean).includes(req.headers.origin)) fail(403, 'Origin not allowed.');
+        if (req.headers.origin && !originAllowlist.has(req.headers.origin)) fail(403, 'Origin not allowed.');
         if (!req.headers['content-type']?.startsWith('application/json')) fail(415, 'Use application/json.');
       }
 

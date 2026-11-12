@@ -469,7 +469,7 @@ test('envOrganizerAutoLogin authenticates same-origin hosted requests and bill e
   })).status, 403);
 });
 
-test('Vercel serverless entrypoint uses ORGANIZER_TOKEN env without prompting externally', async () => {
+test('Vercel serverless entrypoint uses ORGANIZER_TOKEN env and handles rewritten routes without prompting externally', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'splitsync-vercel-'));
   const prevEnv = {
     VERCEL: process.env.VERCEL,
@@ -483,30 +483,47 @@ test('Vercel serverless entrypoint uses ORGANIZER_TOKEN env without prompting ex
     process.env.ORGANIZER_TOKEN = organizerToken;
     delete process.env.LOCAL_ORGANIZER_AUTO_LOGIN;
 
-    const {default: vercelHandler} = await import('../../api/[...route].mjs');
-    const callVercel = async (path, method = 'GET') => {
-      const req = Readable.from([]);
+    const {default: vercelHandler} = await import('../../api/index.mjs');
+    const callVercel = async (path, {method = 'GET', body, headers = {}} = {}) => {
+      const req = body === undefined ? Readable.from([]) : Readable.from([Buffer.from(JSON.stringify(body))]);
       req.url = path;
       req.method = method;
       req.socket = {remoteAddress: '203.0.113.99'};
-      req.headers = {'x-forwarded-proto': 'https', 'x-forwarded-host': 'paypal-ai-hackathon.vercel.app', host: 'paypal-ai-hackathon.vercel.app', 'sec-fetch-site': 'same-origin'};
+      req.headers = {
+        'x-forwarded-proto': 'https',
+        'x-forwarded-host': 'paypal-hackathon-2026-git-main-dabomturtle8902-lang.vercel.app',
+        host: 'paypal-hackathon-2026-preview-internal.vercel.app',
+        'sec-fetch-site': 'same-origin',
+        ...(body === undefined ? {} : {'content-type': 'application/json'}),
+        ...headers,
+      };
       const result = {headers: {}};
       const res = {
         setHeader(k, v) { result.headers[k.toLowerCase()] = v; },
-        writeHead(code, headers = {}) { result.status = code; for (const [k, v] of Object.entries(headers)) result.headers[k.toLowerCase()] = v; },
+        writeHead(code, h = {}) { result.status = code; for (const [k, v] of Object.entries(h)) result.headers[k.toLowerCase()] = v; },
         end(data) { result.text = data?.toString() || ''; try { result.body = JSON.parse(result.text); } catch {} },
       };
       await vercelHandler(req, res);
       return result;
     };
 
-    const health = await callVercel('/api/health');
+    const health = await callVercel('/api/index?__route=/api/health');
     assert.equal(health.status, 200);
     assert.equal(health.body.localOrganizerAutoLogin, true);
 
-    const state = await callVercel('/api/organizer/state');
+    const state = await callVercel('/api/index?__route=/api/organizer/state', {
+      headers: {origin: 'https://paypal-hackathon-2026-git-main-dabomturtle8902-lang.vercel.app'},
+    });
     assert.equal(state.status, 200);
     assert.equal(state.body.purchase.purchaseId, 'SS-001');
+
+    // Without NVIDIA_API_KEY configured, extract-bill returns 503 (never 401 asking for ORGANIZER_TOKEN)
+    const scan = await callVercel('/api/index?__route=/api/organizer/extract-bill', {
+      method: 'POST',
+      headers: {origin: 'https://paypal-hackathon-2026-git-main-dabomturtle8902-lang.vercel.app'},
+      body: {imageDataUrl: 'data:image/png;base64,AAAA'},
+    });
+    assert.equal(scan.status, 503);
   } finally {
     for (const [k, v] of Object.entries(prevEnv)) {
       if (v === undefined) delete process.env[k];
