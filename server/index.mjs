@@ -16,7 +16,8 @@ const paypal=new PayPal({clientId:process.env.PAYPAL_CLIENT_ID,clientSecret:proc
 const defaultFlutterOrigin=['localhost','127.0.0.1'].includes(origin.hostname)?'http://localhost:5173':'';
 const hasEnvOrganizer=Boolean(process.env.ORGANIZER_TOKEN?.trim());
 const autoLinkLocal=process.env.LOCAL_ORGANIZER_AUTO_LOGIN==='true'||(hasEnvOrganizer&&process.env.LOCAL_ORGANIZER_AUTO_LOGIN!=='false'&&['localhost','127.0.0.1'].includes(origin.hostname));
-const {server}=createApp({store,paypal,nvidia:createNvidia({key:process.env.NVIDIA_API_KEY,python:process.env.NVIDIA_PYTHON}),organizerToken,baseUrl,loadRates:createExchangeRateLoader(),flutterOrigin:process.env.FLUTTER_WEB_ORIGIN||defaultFlutterOrigin,localOrganizerAutoLogin:autoLinkLocal,staticDir:resolve(here,'../website/dist')});
+const envOrganizerAutoLogin=hasEnvOrganizer&&process.env.LOCAL_ORGANIZER_AUTO_LOGIN!=='false';
+const {server}=createApp({store,paypal,nvidia:createNvidia({key:process.env.NVIDIA_API_KEY,python:process.env.NVIDIA_PYTHON}),organizerToken,baseUrl,loadRates:createExchangeRateLoader(),flutterOrigin:process.env.FLUTTER_WEB_ORIGIN||defaultFlutterOrigin,localOrganizerAutoLogin:autoLinkLocal,envOrganizerAutoLogin,staticDir:resolve(here,'../website/dist')});
 server.listen(port,process.env.HOST||'127.0.0.1',()=>{
   console.log(`SplitSync Sandbox: ${baseUrl}\nOrganizer access key (keep private): ${organizerToken}\nPayPal credentials: ${paypal.configured?'configured':'missing — fill server/.env and restart'}\nUse this server, not the old Python :8080 server, for payments.`);
 });

@@ -19,13 +19,15 @@ function fakePayPal(){
     async verify(_event,headers){return headers['paypal-transmission-sig']==='valid';}
   };
 }
-function setup({store, paypal=fakePayPal(), nvidia, delivery, localOrganizerAutoLogin=false}={}){
+function setup({store, paypal=fakePayPal(), nvidia, delivery, localOrganizerAutoLogin=false, envOrganizerAutoLogin=false, customBaseUrl=baseUrl}={}){
   store ||= new Store();store.state ||= newState();
-  const {handler}=createApp({store,paypal,nvidia,delivery,organizerToken,baseUrl,localOrganizerAutoLogin,staticDir:join(import.meta.dirname,'../../website/dist')});
-  async function request(path,{method='GET',body,auth=false,headers={},remoteAddress='127.0.0.1'}={}){
-    const req=Readable.from(body===undefined?[]:[Buffer.from(JSON.stringify(body))]);
+  const baseHost=new URL(customBaseUrl).host;
+  const {handler}=createApp({store,paypal,nvidia,delivery,organizerToken,baseUrl:customBaseUrl,localOrganizerAutoLogin,envOrganizerAutoLogin,staticDir:join(import.meta.dirname,'../../website/dist')});
+  async function request(path,{method='GET',body,preParsedBody,auth=false,headers={},remoteAddress='127.0.0.1'}={}){
+    const req=preParsedBody!==undefined?Readable.from([]):Readable.from(body===undefined?[]:[Buffer.from(JSON.stringify(body))]);
+    if(preParsedBody!==undefined){req.body=preParsedBody;Object.defineProperty(req,'readableEnded',{value:true});}
     req.socket={remoteAddress};
-    req.url=path;req.method=method;req.headers={host:'localhost:3000',...(body===undefined?{}:{'content-type':'application/json'}),...(auth?{authorization:'Bearer '+organizerToken}:{}),...headers};
+    req.url=path;req.method=method;req.headers={host:baseHost,...(body===undefined&&preParsedBody===undefined?{}:{'content-type':'application/json'}),...(auth?{authorization:'Bearer '+organizerToken}:{}),...headers};
     const result={headers:{}};const res={setHeader(k,v){result.headers[k.toLowerCase()]=v;},writeHead(code,headers={}){result.status=code;for(const[k,v]of Object.entries(headers))result.headers[k.toLowerCase()]=v;},end(data){result.text=data?.toString()||'';try{result.body=JSON.parse(result.text);}catch{}}};
     await handler(req,res);return result;
   }
@@ -419,4 +421,97 @@ test('localOrganizerAutoLogin health flag reflects server config without bypassi
   assert.equal(health.body.localOrganizerAutoLogin, true);
   // Organizer endpoints still reject cross-origin or non-loopback requests without bearer/cookie
   assert.equal((await auto.request('/api/organizer/state', {remoteAddress: '203.0.113.1'})).status, 401);
+});
+
+test('envOrganizerAutoLogin authenticates same-origin hosted requests and bill extraction without manual token entry', async () => {
+  const vercelOrigin = 'https://paypal-ai-hackathon.vercel.app';
+  const hosted = setup({
+    customBaseUrl: vercelOrigin,
+    envOrganizerAutoLogin: true,
+    nvidia: {
+      configured: true,
+      async extractBill({imageDataUrl}) {
+        assert.match(imageDataUrl, /^data:image\/png;base64,/);
+        return {merchant: 'Cafe Mocha', date: '2026-11-12', currency: 'USD', items: [{name: 'Latte', amountCents: 650}], taxCents: 0, tipCents: 0, totalCents: 650, unreadableFields: [], totalMismatch: false};
+      },
+    },
+  });
+
+  const health = await hosted.request('/api/health', {remoteAddress: '203.0.113.50'});
+  assert.equal(health.status, 200);
+  assert.equal(health.body.localOrganizerAutoLogin, true);
+
+  const stateRes = await hosted.request('/api/organizer/state', {
+    remoteAddress: '203.0.113.50',
+    headers: {origin: vercelOrigin, 'sec-fetch-site': 'same-origin'},
+  });
+  assert.equal(stateRes.status, 200);
+
+  const scanRes = await hosted.request('/api/organizer/extract-bill', {
+    method: 'POST',
+    remoteAddress: '203.0.113.50',
+    headers: {origin: vercelOrigin, 'sec-fetch-site': 'same-origin'},
+    preParsedBody: {imageDataUrl: 'data:image/png;base64,AAAA'},
+  });
+  assert.equal(scanRes.status, 200);
+  assert.equal(scanRes.body.merchant, 'Cafe Mocha');
+
+  // Cross-site requests are still rejected
+  assert.equal((await hosted.request('/api/organizer/state', {
+    remoteAddress: '203.0.113.50',
+    headers: {'sec-fetch-site': 'cross-site'},
+  })).status, 401);
+  assert.equal((await hosted.request('/api/organizer/extract-bill', {
+    method: 'POST',
+    remoteAddress: '203.0.113.50',
+    headers: {origin: 'https://evil.example'},
+    body: {imageDataUrl: 'data:image/png;base64,AAAA'},
+  })).status, 403);
+});
+
+test('Vercel serverless entrypoint uses ORGANIZER_TOKEN env without prompting externally', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'splitsync-vercel-'));
+  const prevEnv = {
+    VERCEL: process.env.VERCEL,
+    DATA_FILE: process.env.DATA_FILE,
+    ORGANIZER_TOKEN: process.env.ORGANIZER_TOKEN,
+    LOCAL_ORGANIZER_AUTO_LOGIN: process.env.LOCAL_ORGANIZER_AUTO_LOGIN,
+  };
+  try {
+    process.env.VERCEL = '1';
+    process.env.DATA_FILE = join(dir, 'ledger.json');
+    process.env.ORGANIZER_TOKEN = organizerToken;
+    delete process.env.LOCAL_ORGANIZER_AUTO_LOGIN;
+
+    const {default: vercelHandler} = await import('../../api/[...route].mjs');
+    const callVercel = async (path, method = 'GET') => {
+      const req = Readable.from([]);
+      req.url = path;
+      req.method = method;
+      req.socket = {remoteAddress: '203.0.113.99'};
+      req.headers = {'x-forwarded-proto': 'https', 'x-forwarded-host': 'paypal-ai-hackathon.vercel.app', host: 'paypal-ai-hackathon.vercel.app', 'sec-fetch-site': 'same-origin'};
+      const result = {headers: {}};
+      const res = {
+        setHeader(k, v) { result.headers[k.toLowerCase()] = v; },
+        writeHead(code, headers = {}) { result.status = code; for (const [k, v] of Object.entries(headers)) result.headers[k.toLowerCase()] = v; },
+        end(data) { result.text = data?.toString() || ''; try { result.body = JSON.parse(result.text); } catch {} },
+      };
+      await vercelHandler(req, res);
+      return result;
+    };
+
+    const health = await callVercel('/api/health');
+    assert.equal(health.status, 200);
+    assert.equal(health.body.localOrganizerAutoLogin, true);
+
+    const state = await callVercel('/api/organizer/state');
+    assert.equal(state.status, 200);
+    assert.equal(state.body.purchase.purchaseId, 'SS-001');
+  } finally {
+    for (const [k, v] of Object.entries(prevEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    await rm(dir, {recursive: true, force: true});
+  }
 });

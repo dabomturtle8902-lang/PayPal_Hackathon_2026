@@ -1,0 +1,10 @@
+{
+  "framework": null,
+  "outputDirectory": "website/dist",
+  "rewrites": [
+    {
+      "source": "/paypal/(.*)",
+      "destination": "/api/paypal/$1"
+    }
+  ]
+}

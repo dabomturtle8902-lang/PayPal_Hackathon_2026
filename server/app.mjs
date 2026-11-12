@@ -1,7 +1,7 @@
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {resolve, extname, sep} from 'node:path';
-import {timingSafeEqual, randomUUID} from 'node:crypto';
+import {timingSafeEqual, randomUUID, createHmac} from 'node:crypto';
 import {FX_RATES_USD, FX_REFERENCE_DATE, convertAmountCents, defaultContacts, fxQuote, names, normalizeCurrency, secret} from './store.mjs';
 
 const fail = (status, message) => { throw Object.assign(new Error(message), {status}); };
@@ -29,11 +29,11 @@ function defaultDelivery() {
   };
 }
 
-export function createApp({store, paypal, nvidia, delivery, organizerToken, baseUrl, flutterOrigin = '', localOrganizerAutoLogin = false, loadRates = async () => ({rates: FX_RATES_USD, date: FX_REFERENCE_DATE}), staticDir}) {
+export function createApp({store, paypal, nvidia, delivery, organizerToken, baseUrl, flutterOrigin = '', localOrganizerAutoLogin = false, envOrganizerAutoLogin = false, loadRates = async () => ({rates: FX_RATES_USD, date: FX_REFERENCE_DATE}), staticDir}) {
   const base = new URL(baseUrl);
   const deliv = delivery || defaultDelivery();
   const participants = () => Object.values(store.state.participants);
-  const sessionKey = secret();
+  const sessionKey = createHmac('sha256', organizerToken).update('splitsync-session-v1').digest('hex');
 
   const publicShare = p => ({
     name: p.name, amountCents: p.amountCents, currency: 'USD', status: p.status, receipt: p.receipt,
@@ -76,16 +76,24 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
     note: req.demo ? 'Practice request with simulated settlement. No money moves.' : 'Personal receipt reimbursement request. PayPal Sandbox merchant checkout applies only to Sandbox Merchant purchases (SS-001).',
   });
 
+  function sameOriginRequest(req) {
+    return (!req.headers.origin || [base.origin, flutterOrigin].filter(Boolean).includes(req.headers.origin))
+      && req.headers['sec-fetch-site'] !== 'cross-site';
+  }
+
   function localOrganizer(req) {
     return localOrganizerAutoLogin
       && ['localhost', '127.0.0.1', '[::1]'].includes(base.hostname)
       && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket?.remoteAddress)
-      && (!req.headers.origin || [base.origin, flutterOrigin].includes(req.headers.origin))
-      && req.headers['sec-fetch-site'] !== 'cross-site';
+      && sameOriginRequest(req);
+  }
+
+  function envAutoOrganizer(req) {
+    return envOrganizerAutoLogin && sameOriginRequest(req);
   }
 
   function organizer(req) {
-    return localOrganizer(req) || equal(req.headers.authorization, `Bearer ${organizerToken}`)
+    return localOrganizer(req) || envAutoOrganizer(req) || equal(req.headers.authorization, `Bearer ${organizerToken}`)
       || equal((req.headers.cookie || '').split(';').map(s => s.trim()).find(s => s.startsWith('splitsync_session='))?.slice(18), sessionKey);
   }
 
@@ -112,6 +120,20 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
   }
 
   async function body(req, maxBytes = 65536) {
+    if (req.readableEnded && req.body !== undefined) {
+      if (typeof req.body === 'string') {
+        if (Buffer.byteLength(req.body) > maxBytes) fail(413, 'Request too large.');
+        try { return req.body.trim() ? JSON.parse(req.body) : {}; } catch { fail(400, 'Invalid JSON.'); }
+      }
+      if (Buffer.isBuffer(req.body)) {
+        if (req.body.length > maxBytes) fail(413, 'Request too large.');
+        try { return req.body.length ? JSON.parse(req.body.toString('utf8')) : {}; } catch { fail(400, 'Invalid JSON.'); }
+      }
+      if (typeof req.body === 'object' && req.body !== null) {
+        if (Buffer.byteLength(JSON.stringify(req.body)) > maxBytes) fail(413, 'Request too large.');
+        return req.body;
+      }
+    }
     let size = 0;
     const chunks = [];
     for await (const chunk of req) {
@@ -244,7 +266,7 @@ export function createApp({store, paypal, nvidia, delivery, organizerToken, base
       }
       if (path === '/api/health' && req.method === 'GET') {
         const p = providerSummary();
-        return send(200, {mode: 'sandbox', localOrganizerAutoLogin: Boolean(localOrganizer(req)), configured: p.paypalConfigured, aiConfigured: p.aiConfigured, ...p});
+        return send(200, {mode: 'sandbox', localOrganizerAutoLogin: Boolean(localOrganizer(req) || envAutoOrganizer(req)), configured: p.paypalConfigured, aiConfigured: p.aiConfigured, ...p});
       }
       if (path === '/api/organizer/session' && req.method === 'POST') {
         const input = await body(req);
