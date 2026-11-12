@@ -1,120 +1,140 @@
-# PayPal Hackathon
+# SplitSync AI
 
-A Flutter app and responsive website for shared purchases, now connected through a local PayPal Sandbox backend.
+**Multi-currency wallet, AI-assisted group bill splitting, receipt OCR, household recurring bills, and PayPal Sandbox merchant checkout** — built across a responsive **Vanilla JS Web App** (`website/dist/`), a **Flutter App** (`flutter_app/`), and a **Node.js Backend** (`server/`).
 
-## Run the connected app
+[![Demo Video](https://img.shields.io/badge/Demo_Showcase-1080p_60fps_H.264-0070ba)](demos/splitsync-full-showcase.mp4)
+[![Web Suite](https://img.shields.io/badge/Web_Tests-node_website%2Ftest%2Fdemo.cjs-16a34a)](#testing--verification)
+[![Server Tests](https://img.shields.io/badge/Server_Tests-25%2F25_Passing-16a34a)](#testing--verification)
+[![Flutter Tests](https://img.shields.io/badge/Flutter_Tests-15%2F15_Passing-16a34a)](#testing--verification)
 
-Start with [server/README.md](server/README.md). It explains credentials, VS Code commands, organizer access, Flutter setup, testing, and webhooks.
+---
 
-```sh
+## Live 7-Act Product Showcase
+
+Click the animated preview below to open the full 1080p 60fps showcase recording ([`demos/splitsync-full-showcase.mp4`](demos/splitsync-full-showcase.mp4)):
+
+[![SplitSync AI 7-Act Product Showcase](previews/splitsync-showcase.gif)](demos/splitsync-full-showcase.mp4)
+
+> **Video specs:** `1920×1080` · `60 fps` · `H.264 (yuv420p)` · `146.97s` (`8,818` frames) · `18.9 MB`
+> Recorded deterministically across live **Desktop (`1440×900`) -> Tablet (`1024×768`) -> Phone (`390×844`)** bezel morphs via [`scripts/record-splitsync-showcase.mjs`](scripts/record-splitsync-showcase.mjs) (Playwright + Chrome DevTools Protocol `Emulation.setDeviceMetricsOverride` + FFmpeg).
+
+<details>
+<summary><strong>7-Act Showcase Breakdown (Click to expand)</strong></summary>
+
+1. **Act 1 — Authentication & Core Home Shell (`Desktop 1440×900 · .nav-rail`):** PIN lock (`"Welcome, Leah"` / `1234`) with Show/Hide toggle and Phone Authenticator unlock, organizer connection state (`#welcome`), PayPal Wallet (`$245.00 USD`) + Three.js 3D card deck (`cards3d.js`) + `+ Recharge` modal, Quick Contacts, Bento Store showcase, and `leah@paypal` Receive QR.
+2. **Act 2 — Bidirectional International FX & Transfers (`Desktop 1440×900`):** Currency-only recipient cards (`Allen · GBP`, `Maya · USD`, `Arun · CAD`, `Sofia · EUR`, `Yuki · JPY`), `You send` vs `Recipient receives` toggle with integer `JPY` formatting and live `INR` estimates, funding source selection (`PayPal Wallet` vs `PayPal Cashback •••• 9104`), and `#tx/:id` receipt.
+3. **Act 3 — Store, Cart, Checkout & "Split Cash" AI Handoff (`Tablet 1024×768 · Adaptive`):** `11`-item household catalog with category chips (`All`, `Kitchen`, `Lighting`, `Electronics`), product detail (`#product/:id`) quantity stepper & sandbox badge, `#cart`, `#checkout-review`, and Store Receipt **Split cash** handoff straight into Ask AI.
+4. **Act 4 — Multimodal Ask AI, Voice TTS & Group Payment Drafts (`Tablet 1024×768`):** `#ask` (`#fab-ask-ai`) with `Voice ON/OFF` Chatterbox TTS toggle, multi-recipient batch split prompt (`"Give Maya $24 and Arun $18"`), ambiguous contact clarification, `#review-payment-draft`, and `#payment-draft-receipt`.
+5. **Act 5 — Receipt Scanning & Household Bills (`Phone 390×844 · .bottom-nav`):** Responsive bottom navigation, `#scan-bill` (`Olive Kitchen` OCR sample receipt, editable line items, mismatch warning), `#request/:id` progress & staggered arrival notifications, and `#electricity` / `#rent` Equal vs Custom shares with `Save rule for future months`.
+6. **Act 6 — PayPal Sandbox Merchant Flow (`SS-001`) & Isolated Payer Views (`Phone 390×844`):** `#scan` QR scanner -> `#purchase/SS-001` -> `#review` -> `#split` (`$150.00 USD`: `$120` shared essentials + `$30` desk lamp owner chip), `#requests`, `#qr/:name`, `#pay/:token` (`Pay with PayPal` Orders v2 Sandbox), and `#dashboard`.
+7. **Act 7 — Unified Activity Ledger, Theme Switcher & Dev Tools (`Desktop 1440×900`):** `#activity` (`#payment-cycle-card` 7D/30D inflow/outflow wave + `All` / `Awaiting payment` / `Payment received` / `Sent` / `Sandbox` filters), `#profile` (Medfarm `System / Light / Dark` theme switcher, backend/Chatterbox/Sandbox status, enlarged `leah@paypal` QR), and `#dev` controls.
+
+</details>
+
+---
+
+## Multi-Device Screenshots
+
+### Screen Studio Showcase Captures (Latest Web Flow)
+
+| Desktop Activity Cycle (`1440×900`) | Desktop Profile, Theme & QR (`1440×900`) |
+| :---: | :---: |
+| ![Desktop Activity Cycle](previews/showcase-activity-cycle.png) | ![Desktop Profile and QR](previews/showcase-profile-qr.png) |
+
+| Phone Receipt Split (`390×844`) | Phone Household Bills (`390×844`) | Phone Payer Checkout (`390×844`) |
+| :---: | :---: | :---: |
+| ![Phone Receipt Split](previews/showcase-phone-receipt-split.png) | ![Phone Household Bills](previews/showcase-phone-household-bills.png) | ![Phone Payer Checkout](previews/showcase-phone-sandbox-payer.png) |
+
+### Native Web & Flutter Viewport Captures
+
+| Desktop Home (`1440×900`) | Desktop Ask AI (`1440×900`) | Tablet Storefront Light (`1024×768`) |
+| :---: | :---: | :---: |
+| ![Desktop Home](previews/desktop-home.png) | ![Desktop Ask AI](previews/desktop-ask-ai.png) | ![Tablet Storefront](previews/tablet-store.png) |
+
+| Mobile PIN Login (`390×844`) | Mobile Send Money (`390×844`) | Flutter Home (`390×844`) |
+| :---: | :---: | :---: |
+| ![Mobile PIN Login](previews/mobile-pin-login.png) | ![Mobile Send Money](previews/mobile-send-money.png) | ![Flutter Home](previews/mobile-flutter-home.png) |
+
+---
+
+## Core Features
+
+- **Medfarm Light & Dark Adaptive UI:** Responsive navigation rail on desktop/tablet (`.nav-rail`) transitioning seamlessly into a thumb-friendly mobile `.bottom-nav`, paired with `System / Light / Dark` theme switching and an interactive Three.js 3D PayPal card deck (`website/dist/cards3d.js`).
+- **Bidirectional FX & Cross-Border Transfers:** Switch freely between `You send` and `Recipient receives`, format integer `JPY` amounts cleanly, preview `Demo rate` + `INR` estimates, and choose between `PayPal Wallet` and `PayPal Cashback •••• 9104` at checkout.
+- **Ask AI Assistant & Voice TTS:** Parse natural-language split instructions (`"Give Maya $24 and Arun $18"`), disambiguate contacts interactively, confirm multi-recipient Group Payment Drafts, and toggle Chatterbox TTS audio playback (`server/chatterbox.py`).
+- **Receipt OCR & Household Bills:** Scan or load sample receipts with editable line items and mismatch detection (`#scan-bill`), plus recurring Electricity (`#electricity`) and Rent (`#rent`) workflows with Equal vs Custom share rules and `Save rule for future months`.
+- **Store Catalog & "Split Cash" Handoff:** Browse 11 household items with category filtering, adjust cart quantities, complete demo checkout, and send the receipt straight to `#ask` via **Split cash**.
+- **PayPal Sandbox Orders v2 Merchant Flow (`SS-001`):** Generate isolated per-participant payer checkout links (`#pay/:token`) backed by `server/paypal.mjs` with live collection progress tracking (`#dashboard`).
+
+---
+
+## Project Structure
+
+```text
+SplitSync-AI/
+├── website/
+│   ├── dist/                # Responsive Web App (index.html, app.js, cards3d.js, qrcode.js, style.css, three.module.min.js)
+│   └── test/demo.cjs        # VM UI route, FX, QR, and store verification suite
+├── server/
+│   ├── app.mjs              # Node.js 22+ HTTP API (no npm dependencies), static hosting, SSE events & purchase store
+│   ├── paypal.mjs           # PayPal Sandbox Orders v2 client & webhook verification
+│   ├── nvidia.mjs           # Multimodal AI receipt extraction & split parser
+│   ├── chatterbox.py        # Voice TTS synthesis helper
+│   ├── transcribe.py        # Speech transcription helper
+│   ├── README.md            # Sandbox credentials, organizer access, Flutter CORS, and webhooks guide
+│   └── test/                # Node native test runner suite (25 unit & integration tests)
+├── flutter_app/
+│   ├── lib/                 # Cross-platform Flutter UI, models, theme, widgets & speech helpers
+│   └── test/widget_test.dart # 15 Flutter widget & flow tests
+├── scripts/
+│   └── record-splitsync-showcase.mjs  # 7-Act Screen Studio Playwright + CDP + FFmpeg recorder
+├── demos/
+│   └── splitsync-full-showcase.mp4    # Full 1920×1080 60fps H.264 showcase video
+└── previews/                # Multi-device screenshots & splitsync-showcase.gif preview
+```
+
+---
+
+## Quick Start
+
+### 1. Run the Backend & Web App
+
+Requires **Node.js 22+** (no npm dependencies in `server/`). See [`server/README.md`](server/README.md) for PayPal Sandbox credentials, organizer access keys, and webhook setup.
+
+```bash
 cd server
-cp -n .env.example .env
-# Open .env in VS Code and fill in your Sandbox Client ID and Client Secret.
+cp -n .env.example .env   # optional: configure PayPal Sandbox / NVIDIA / LOCAL_ORGANIZER_AUTO_LOGIN
 npm start
 ```
 
-Open http://localhost:3000. Home starts in Demo mode. To connect the organizer backend, open **Profile → Connect backend** and enter the organizer key from the terminal. For the Sandbox merchant walkthrough, scan or paste `#purchase/SS-001` and confirm the purchase split. The server calculates Maya $70, Arun $40 and Leah $40 for the $150 bill. Each participant gets a private link. PayPal approval occurs on PayPal's Sandbox screen; completed captures update the shared ledger.
+Open **`http://localhost:3000`** in your browser (`Profile → Connect backend` accepts the organizer key printed in the server terminal, or set `LOCAL_ORGANIZER_AUTO_LOGIN=true` in `server/.env` for automatic local demo access; default demo PIN is `1234`).
 
-Secrets belong only in `server/.env`. Do not put PayPal credentials in Flutter, browser JavaScript or GitHub. Sandbox only: there is no live-payment switch.
+### 2. Run the Flutter App
 
-## Project structure
-
-- `server/`: Node.js 22+ backend, PayPal client, durable local ledger, and mocked payment tests. No npm dependencies.
-- `website/dist/`: responsive organizer and payer interface served by the backend.
-- `website/test/demo.cjs`: static visual-demo regression checks.
-- `flutter_app/`: companion Flutter source; connect it to the backend from its Profile tab. Generate platform folders in this directory if needed, rather than at the repository root.
-- `previews/`: screenshots. The original five frames depict the earlier visual demo, whose statuses and receipt were simulated; `backend-checkout.jpg` shows the connected checkout awaiting credentials.
-
-## Flutter
-
-Use Flutter 3.47+ and its bundled Dart SDK. From `flutter_app`:
-
-```sh
-flutter create --platforms=android,ios,web --project-name splitsync .
+```bash
+cd flutter_app
 flutter pub get
-flutter analyze
-flutter run -d chrome --web-hostname=localhost --web-port=5173 --dart-define=PAYER_ORIGIN=http://localhost:3000
+flutter run -d chrome --web-port=5173 --dart-define=PAYER_ORIGIN=http://localhost:3000
 ```
 
-Do not rerun `flutter create` if the needed platform folders already exist. On iOS, declare camera, photo library, microphone, and speech-recognition usage descriptions in `Runner/Info.plist`. Android declares camera, Internet, and microphone permissions in the app manifest. Use a reachable HTTPS backend for physical phones. Profile accepts the organizer access key from the server terminal. The Flutter web origin must match `FLUTTER_WEB_ORIGIN` on the server.
+### 3. Re-Record the 7-Act Product Demo Video
 
-## Hackathon walkthrough
+Requires Node.js dependencies in `scripts/` (`Playwright`) and `ffmpeg`/`ffprobe` on `PATH`:
 
-- In **Ask SplitSync**, type or dictate “Allen, send him 20 dollars saying thanks for coffee.” Review USD 20 and the GBP 15.80 fixture estimate, then confirm to create a Demo receipt in Activity.
-- Create a demo request from Home. Its fictional payment advances automatically. Connected reimbursements can also create private share links.
-- Start **Scan bill** with a camera, upload, or manual entry. Use **Rent** for a blank household draft or **Store** for sample shopping and cart splitting.
-- Open `/#dev-reset` to clear fictional web demo data. For the local Flutter ledger, launch with `--dart-define=RESET_LOCAL_DEMO=true` for the reset run. Merchant orders and personal reimbursement links are separate.
+```bash
+cd scripts && npm install && cd ..
+node scripts/record-splitsync-showcase.mjs
+# Fast choreography check (dry-run without video encode):
+node scripts/record-splitsync-showcase.mjs --dry-run
+```
 
-The backend is intended for one household's Sandbox testing with one Node process and a persistent ledger. Production account management, refunds, disputes, multi-merchant onboarding, payouts and rent payments are outside this implementation. See [VALIDATION.md](VALIDATION.md) for verification limits.
+---
 
-## Original static demo screenshots and step-by-step guide
+## Testing & Verification
 
-The following walkthrough describes the original static visual demo. Use [server/README.md](server/README.md) for connected PayPal Sandbox checkout.
-
-These pictures show the responsive website demo. The Flutter source implements the companion mobile flow; native builds have not been validated. Images are static: use the running website to try the controls described below.
-
-### 1. Scan or open a purchase
-
-![Mobile purchase scanner](previews/portrait-scanner.jpg)
-
-**What is happening:** The organizer is opening a merchant purchase before reviewing the bill. The camera frame illustrates where a merchant QR would appear.
-
-1. From **Overview**, select **Scan QR** or **New purchase** to reach this screen.
-2. Select **Enable camera** and allow browser camera access to show a live preview. Camera access requires HTTPS or localhost. This website demo does not decode QR codes from the preview.
-3. For the sample walkthrough, select **Open demo purchase**. Alternatively, enter `#purchase/SS-001` in the purchase-link field and select **Open pasted link**.
-4. If camera access fails, use either of those fallback options. **Permission denied state** opens the example error screen so you can inspect that experience.
-5. On the purchase-details screen, review the $120 kitchen essentials and $30 lamp. Check who is sharing and read the split instruction, then select **Prepare AI split →**.
-
-### 2. Review each person's share on mobile
-
-![Mobile split review](previews/portrait-ai-split.jpg)
-
-**What is happening:** The $150 purchase has been allocated among Maya, Arun, and Leah. Each person pays $40 for the shared kitchen essentials; Maya also pays $30 for the lamp, bringing her total to $70.
-
-1. Tap a participant's name or amount row to expand or collapse their item breakdown.
-2. Compare the shares with the **Original bill** shown below the allocations. The three shares should add up to $150.
-3. To change who pays for the lamp, select **Edit split**, choose a person from **Who should pay for the lamp?**, then select **Back to review**. The shared essentials remain $40 per person.
-4. Once the amounts are correct, select **Confirm split →** to open the payment-request screen.
-5. Use **Copy link** beside each participant to copy their individual share link, or select their QR button to display a scannable share link. Copying a link does not send it automatically.
-
-The “AI assisted demo” label describes a fixed allocation rule in this prototype; it does not call an AI service.
-
-### 3. Compare the bill and split in a wider layout
-
-![Landscape split review](previews/landscape-ai-split.jpg)
-
-**What is happening:** This is the same split-review screen in a wider layout. The original bill appears on the left, and the suggested allocations appear on the right.
-
-1. Check the original bill: $120 shared essentials plus a $30 lamp equals $150.
-2. Expand the participant rows on the right to inspect each person's assigned items.
-3. Read the calculation note: $120 divided by three is $40 each, with the lamp charged to its selected owner.
-4. Select **Edit split** if the lamp owner needs changing, or **Confirm split →** to proceed to payment requests.
-
-Changing the screen orientation changes the arrangement of the cards; it does not change the allocations.
-
-### 4. Open an individual payment request
-
-![Desktop payer view](previews/desktop-payer.jpg)
-
-**What is happening:** Maya has opened her participant link. Her page shows $40 for shared essentials and $30 for her personal lamp, for a total of $70.
-
-1. Open the participant link copied from the organizer's payment-request screen. For Maya, the website route ends in `#share/maya`.
-2. Check the participant name, the purchase, and the **Your items** breakdown.
-3. Compare the breakdown with **Total to pay** in the payment summary.
-4. Select **Pay with PayPal** to open the demo handoff screen.
-5. On that screen, select **Preview Processing**, **Preview Paid**, or **Preview Cancelled** to inspect a possible result, or **Return to your share** to go back.
-
-This prototype does not sign you into PayPal, create an order, or transfer money. Participant links are demo routes, not secure authorization tokens.
-
-### 5. Inspect a payment-result preview
-
-![Demo payment result](previews/mobile-payment-result.jpg)
-
-**What is happening:** The **Paid** preview is selected for Maya's $70 share. The page displays a sample completion message, participant name, status, and demo receipt reference.
-
-1. Read the displayed amount and participant name to check whose result you are viewing.
-2. Select **Processing**, **Paid**, or **Cancelled** at the top to switch between the example outcomes.
-3. In the paid or processing preview, select **View your share** to return to the participant's item breakdown.
-4. In the cancelled preview, select **Return to share & retry** to return to the participant page and try the demo handoff again.
-
-These controls only switch preview screens. The receipt reference is an example, and selecting **Paid** does not confirm a real payment or update the organizer's seeded group ledger.
+| Target | Command | Observed Result |
+| :--- | :--- | :--- |
+| **Web UI & Routes** | `node website/test/demo.cjs` | **PASS** (exit `0`) |
+| **Node Server** | `cd server && npm test` | **25 passed**, `0` failed |
+| **Flutter Analysis** | `cd flutter_app && flutter analyze` | **PASS** (no issues) |
+| **Flutter Tests** | `cd flutter_app && flutter test --no-pub` | **15 passed**, `0` failed |

@@ -224,13 +224,15 @@ const run = async s => vm.runInContext(s, ctx);
 
   // 7. Scan & pay unsupported code error + isolated SS-001 Sandbox & reimbursement views
   await run('openScanPay()');
-  ctx.document.querySelector = s => (s === '#app' ? app : s === '#purchase-link' ? { value: 'https://random-qr.invalid/123' } : noopEl);
+  ctx.document.querySelector = s => (s === '#app' ? app : s === '#purchase-link' ? { value: 'https://random-qr.invalid/123' } : (s === '#qr' || s === '#req-qr' ? null : noopEl));
   await run('pasteLink()');
   assert(app.innerHTML.includes('Unsupported code'));
   const buyerHtml = await run("buyerPage({name:'Leah',lamp:'Leah',amountCents:7000,status:'Awaiting payment',merchant:'Sandbox Merchant',purchaseTitle:'Move-in essentials',receipt:null},new URLSearchParams('cancelled=1'))");
   assert(buyerHtml.includes('Retry with PayPal'));
   const reimbHtml = await run("reimbursementBuyerPage({merchant:'Olive Kitchen',items:[{name:'Pasta',amountCents:2000}],totalBillCents:4200,recipientName:'Maya',amountCents:2000,currency:'USD',reason:'dinner',status:'Created',note:'Personal reimbursement'})");
   assert(!reimbHtml.includes('Pay with PayPal'));
+  await run("lamp = 'Maya'; go('qr/maya');");
+  assert(app.innerHTML.includes('Maya · $70.00 USD') && app.innerHTML.includes('Open Maya’s checkout'), '#qr/maya should match canonical capitalized Maya');
 
   ctx.location.hash = '#ask';
   await run('chatDraft = null; chatAttachedBill = null;');

@@ -14,3 +14,6 @@ server/data/
 # Local Flutter SDK and editor state
 /flutter/
 .idea/
+.antigravity/
+.tmp_demo_video/
+scripts/node_modules/

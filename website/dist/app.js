@@ -3125,7 +3125,9 @@ async function confirmSplit() {
 }
 function paymentLink(n) { return ledger ? (ledger.published ? ledger.participants.find(p => p.name === n)?.shareUrl : null) : `${location.href.split('#')[0]}#share/${n.toLowerCase()}`; }
 function requestsScreen(qrName) {
-  const active = qrName || selectedQrName || lamp || 'Maya'; selectedQrName = active;
+  const raw = qrName || selectedQrName || lamp || 'Maya';
+  const active = names.find(x => x.toLowerCase() === String(raw).toLowerCase()) || raw;
+  selectedQrName = active;
   const u = paymentLink(active);
   return screenHeader('PayPal Sandbox links', 'SS-001 · Verified PayPal Orders v2 checkout', 'split', badge('PayPal Sandbox', ''))
     + `<div class="split-grid">
@@ -3604,6 +3606,17 @@ async function startCheckout() {
 }
 async function refreshBuyer() { try { buyer = await api('/api/shares/' + buyerToken + '/refresh', {}); await renderBuyer(); } catch {} }
 
+/** Dynamically loads the QR encoder and injects the SVG into `selector` when a real DOM box exists. */
+async function renderQrSvgInto(selector, url) {
+  const box = document.querySelector(selector);
+  if (!box || !url || !('innerHTML' in box)) return;
+  try {
+    const { default: QR } = await import('./qrcode.js');
+    const live = document.querySelector(selector);
+    if (live && 'innerHTML' in live) live.innerHTML = QR(url);
+  } catch {}
+}
+
 let autoCamTriggeredRoute = '';
 async function render() {
   applyThemeMode(themeMode);
@@ -3714,27 +3727,16 @@ async function render() {
   }
 
   if (route === 'requests' || route === 'qr') {
-    const url = paymentLink(selectedQrName || lamp || 'Maya');
-    const box = document.querySelector('#qr');
-    if (box && url) { const { default: QR } = await import('./qrcode.js'); const live = document.querySelector('#qr'); if (live) live.innerHTML = QR(url); }
+    await renderQrSvgInto('#qr', paymentLink(selectedQrName || lamp || 'Maya'));
   }
   if (route === 'request') {
     const req = reimbursementsList.find(r => r.id === a);
     const rec = req?.recipients?.find(x => x.id === selectedReqQr.recipientId) || req?.recipients?.[0];
     const url = rec ? (rec.shareUrl || (location.href.split('#')[0] + '#req/' + rec.shareToken)) : '';
-    const box = document.querySelector('#req-qr');
-    if (box && url) { const { default: QR } = await import('./qrcode.js'); const live = document.querySelector('#req-qr'); if (live) live.innerHTML = QR(url); }
+    await renderQrSvgInto('#req-qr', url);
   }
   if (route === 'home') {
-    const homeQrBox = document.querySelector('#home-receive-qr');
-    const url = receiveQrUrl();
-    if (homeQrBox && url && 'innerHTML' in homeQrBox) {
-      try {
-        const { default: QR } = await import('./qrcode.js');
-        const live = document.querySelector('#home-receive-qr');
-        if (live && 'innerHTML' in live) live.innerHTML = QR(url);
-      } catch {}
-    }
+    await renderQrSvgInto('#home-receive-qr', receiveQrUrl());
     const canvas = document.querySelector('#wallet-3d-canvas');
     const stage = document.querySelector('#wallet-3d-stage');
     if (canvas && stage && typeof WebGLRenderingContext !== 'undefined') {
@@ -3749,15 +3751,7 @@ async function render() {
     }
   }
   if (route === 'profile') {
-    const url = receiveQrUrl();
-    const box = document.querySelector('#profile-receive-qr');
-    if (box && url && 'innerHTML' in box) {
-      try {
-        const { default: QR } = await import('./qrcode.js');
-        const live = document.querySelector('#profile-receive-qr');
-        if (live && 'innerHTML' in live) live.innerHTML = QR(url);
-      } catch {}
-    }
+    await renderQrSvgInto('#profile-receive-qr', receiveQrUrl());
   }
 }
 
