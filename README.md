@@ -1,21 +1,24 @@
-# SplitSync AI
+# PayPal AI Hackathon
 
-**Multi-currency wallet, AI-assisted group bill splitting, receipt OCR, household recurring bills, and PayPal Sandbox merchant checkout** — built across a responsive **Vanilla JS Web App** (`website/dist/`), a **Flutter App** (`flutter_app/`), and a **Node.js Backend** (`server/`).
+**SplitSync AI** — Multi-currency wallet, AI-assisted group bill splitting, receipt OCR, household recurring bills, and PayPal Sandbox merchant checkout, built across a responsive **Vanilla JS Web App** (`website/dist/`), a **Flutter App** (`flutter_app/`), and a **Node.js Backend** (`server/`).
 
-[![Demo Video](https://img.shields.io/badge/Demo_Showcase-1080p_60fps_H.264-0070ba)](demos/splitsync-full-showcase.mp4)
+[![Full Showcase Video](https://img.shields.io/badge/Demo_Showcase-1080p_60fps_H.264-0070ba)](demos/splitsync-full-showcase.mp4)
+[![Quick Walkthrough Video](https://img.shields.io/badge/Quick_Walkthrough-60fps_18.6s-0070ba)](previews/splitsync-demo.mp4)
 [![Web Suite](https://img.shields.io/badge/Web_Tests-node_website%2Ftest%2Fdemo.cjs-16a34a)](#testing--verification)
 [![Server Tests](https://img.shields.io/badge/Server_Tests-25%2F25_Passing-16a34a)](#testing--verification)
 [![Flutter Tests](https://img.shields.io/badge/Flutter_Tests-15%2F15_Passing-16a34a)](#testing--verification)
 
 ---
 
-## Live 7-Act Product Showcase
+## Demo Videos
 
-Click the animated preview below to open the full 1080p 60fps showcase recording ([`demos/splitsync-full-showcase.mp4`](demos/splitsync-full-showcase.mp4)):
+### 1. Full 7-Act Product Showcase (`1080p · 60 fps · 2m 27s`)
 
-[![SplitSync AI 7-Act Product Showcase](previews/splitsync-showcase.gif)](demos/splitsync-full-showcase.mp4)
+Click the animated preview below to open the full 1080p 60 fps showcase video ([`demos/splitsync-full-showcase.mp4`](demos/splitsync-full-showcase.mp4)):
 
-> **Video specs:** `1920×1080` · `60 fps` · `H.264 (yuv420p)` · `146.97s` (`8,818` frames) · `18.9 MB`
+[![PayPal AI Hackathon — 7-Act Product Showcase](previews/splitsync-showcase.gif)](demos/splitsync-full-showcase.mp4)
+
+> **Video specs:** `1920×1080` · `60 fps` · `H.264 (yuv420p)` · `146.97s` (`8,818` frames) · `18.9 MB` · [Watch / Download MP4](demos/splitsync-full-showcase.mp4)
 > Recorded deterministically across live **Desktop (`1440×900`) -> Tablet (`1024×768`) -> Phone (`390×844`)** bezel morphs via [`scripts/record-splitsync-showcase.mjs`](scripts/record-splitsync-showcase.mjs) (Playwright + Chrome DevTools Protocol `Emulation.setDeviceMetricsOverride` + FFmpeg).
 
 <details>
@@ -30,6 +33,15 @@ Click the animated preview below to open the full 1080p 60fps showcase recording
 7. **Act 7 — Unified Activity Ledger, Theme Switcher & Dev Tools (`Desktop 1440×900`):** `#activity` (`#payment-cycle-card` 7D/30D inflow/outflow wave + `All` / `Awaiting payment` / `Payment received` / `Sent` / `Sandbox` filters), `#profile` (Medfarm `System / Light / Dark` theme switcher, backend/Chatterbox/Sandbox status, enlarged `leah@paypal` QR), and `#dev` controls.
 
 </details>
+
+### 2. Quick Feature Walkthrough (`1620×1072 · 60 fps · 18.6s`)
+
+Click the animated preview below to open the fast highlight recording ([`previews/splitsync-demo.mp4`](previews/splitsync-demo.mp4)):
+
+[![PayPal AI Hackathon — Quick Feature Walkthrough](previews/splitsync-demo.gif)](previews/splitsync-demo.mp4)
+
+> **Video specs:** `1620×1072` · `60 fps` · `H.264` · `18.63s` (`1,118` frames) · `4.98 MB` · [Watch / Download MP4](previews/splitsync-demo.mp4)
+> Covers PIN lock (`1234`), Home Hub with 3D card shuffle, bidirectional GBP/USD Demo FX (`Allen receives GBP` -> `$12.52 USD` receipt), and an Ask AI multi-person dinner split (`"Give Maya $24 and Arun $18 for dinner"`).
 
 ---
 
@@ -71,7 +83,7 @@ Click the animated preview below to open the full 1080p 60fps showcase recording
 ## Project Structure
 
 ```text
-SplitSync-AI/
+PayPal_Hackathon_2026/
 ├── website/
 │   ├── dist/                # Responsive Web App (index.html, app.js, cards3d.js, qrcode.js, style.css, three.module.min.js)
 │   └── test/demo.cjs        # VM UI route, FX, QR, and store verification suite
@@ -90,7 +102,7 @@ SplitSync-AI/
 │   └── record-splitsync-showcase.mjs  # 7-Act Screen Studio Playwright + CDP + FFmpeg recorder
 ├── demos/
 │   └── splitsync-full-showcase.mp4    # Full 1920×1080 60fps H.264 showcase video
-└── previews/                # Multi-device screenshots & splitsync-showcase.gif preview
+└── previews/                # Multi-device screenshots, GIF previews & splitsync-demo.mp4 walkthrough
 ```
 
 ---
